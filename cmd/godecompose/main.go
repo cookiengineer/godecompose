@@ -158,25 +158,42 @@ func cmdDisasm(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Disassembling .text section: %d bytes at 0x%x\n", textSection.Size, textSection.Address)
-
 	instructions, err := disasm.DecodeStream(textSection.Data, textSection.Address)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "disassembly error: %v\n", err)
 	}
-	if len(instructions) > 0 {
-		fmt.Printf("Decoded %d instructions\n", len(instructions))
-		blocks := disasm.BuildControlFlowGraph(instructions, nil)
-		fmt.Printf("Built %d basic blocks\n", len(blocks))
-	}
+	fmt.Printf("Decoded %d instructions\n", len(instructions))
 
 	result, err := function.RecoverFromBinary(b, instructions)
-	if err == nil && len(result.Functions) > 0 {
-		fmt.Printf("Recovered %d functions\n", len(result.Functions))
-		for _, f := range result.Functions {
-			if len(f.Blocks) > 0 && f.Name != "" {
-				fmt.Printf("  %s @ 0x%x (blocks: %d)\n", f.Name, f.EntryPoint, len(f.Blocks))
-			}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "function recovery: %v\n", err)
+		return
+	}
+
+	runtimeCount := 0
+	stdlibCount := 0
+	otherCount := 0
+	for _, f := range result.Functions {
+		switch f.Classification {
+		case function.ClassRuntime:
+			runtimeCount++
+		case function.ClassStdlib:
+			stdlibCount++
+		default:
+			otherCount++
+		}
+	}
+
+	fmt.Printf("Functions: %d total\n", len(result.Functions))
+	fmt.Printf("  runtime:  %d (skipped)\n", runtimeCount)
+	fmt.Printf("  stdlib:   %d (skipped)\n", stdlibCount)
+	fmt.Printf("  user:     %d\n", len(result.UserFunctions))
+	fmt.Printf("  other:    %d\n", otherCount)
+
+	if len(result.UserFunctions) > 0 {
+		fmt.Printf("\nUser functions:\n")
+		for _, f := range result.UserFunctions {
+			fmt.Printf("  %-50s @ 0x%x (blocks: %d)\n", f.Name, f.EntryPoint, len(f.Blocks))
 		}
 	}
 
@@ -187,11 +204,19 @@ func cmdDisasm(args []string) {
 
 func cmdDecompile(args []string) {
 	if len(args) < 1 {
-		fmt.Println("usage: godecompose decompile <binary>")
+		fmt.Println("usage: godecompose decompile <binary> [--output=<dir>]")
 		os.Exit(1)
 	}
 
-	b := openBinary(args[0])
+	binaryPath := args[0]
+	outputDir := ""
+	for _, arg := range args[1:] {
+		if strings.HasPrefix(arg, "--output=") {
+			outputDir = arg[9:]
+		}
+	}
+
+	b := openBinary(binaryPath)
 	defer b.Close()
 
 	textSection, ok := b.Section(".text")
@@ -200,26 +225,103 @@ func cmdDecompile(args []string) {
 		os.Exit(1)
 	}
 
-	instructions, err := disasm.DecodeStream(textSection.Data, textSection.Address)
+	symLookup := buildSymLookup(b)
+	instructions, err := disasm.DecodeStreamWithSymbols(textSection.Data, textSection.Address, symLookup)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "disassembly error: %v\n", err)
 	}
 
-	db := loadDatabase()
-	fmt.Fprintf(os.Stderr, "Loading database...\n%s\n", db.Stats())
+	result, err := function.RecoverFromBinary(b, instructions)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "function recovery: %v\n", err)
+	}
 
+	runtimeCount := 0
+	stdlibCount := 0
+	for _, f := range result.Functions {
+		switch f.Classification {
+		case function.ClassRuntime:
+			runtimeCount++
+		case function.ClassStdlib:
+			stdlibCount++
+		}
+	}
+
+	db := loadDatabase()
 	patterns := db.FindPatterns(b.Architecture(), platformFromBinary(b))
-	fmt.Fprintf(os.Stderr, "Matching %d patterns...\n", len(patterns))
+
+	var userInstructions []disasm.Instruction
+	for _, f := range result.UserFunctions {
+		for _, inst := range instructions {
+			if inst.Address >= f.EntryPoint && inst.Address < f.EndAddr {
+				userInstructions = append(userInstructions, inst)
+			}
+		}
+	}
 
 	m := matcher.New(patterns)
-	matches := m.Match(instructions)
+	matches := m.Match(userInstructions)
 
-	fmt.Fprintf(os.Stderr, "Found %d matches\n", len(matches))
+	// Determine Go module name — try build info first, then infer from symbols
+	goModule := "decompiled"
+	if info, hasInfo := b.GoBuildInfo(); hasInfo && info != nil {
+		if info.Path != "" && info.Path != goModule {
+			goModule = info.Path
+		}
+	}
+	// Fallback: extract module from non-main user function names
+	if goModule == "decompiled" {
+		for _, f := range result.UserFunctions {
+			if f.PackagePath != "" && f.PackagePath != "main" {
+				parts := strings.Split(f.PackagePath, "/")
+				if len(parts) > 0 && parts[0] != "" {
+					goModule = parts[0]
+					break
+				}
+			}
+		}
+	}
 
-	g := generate.New(matches, instructions)
-	output := g.Generate()
+	fmt.Fprintf(os.Stderr, "=== Decompilation Summary ===\n")
+	fmt.Fprintf(os.Stderr, "Go module:  %s\n", goModule)
+	fmt.Fprintf(os.Stderr, "Functions:  %d total (runtime: %d, stdlib: %d, user: %d)\n",
+		len(result.Functions), runtimeCount, stdlibCount, len(result.UserFunctions))
+	fmt.Fprintf(os.Stderr, "Patterns:   %d loaded, %d matches\n", len(patterns), len(matches))
+	fmt.Fprintf(os.Stderr, "Packages:   %d\n", len(result.Packages))
 
-	fmt.Print(output)
+	for pkg := range result.Packages {
+		fmt.Fprintf(os.Stderr, "  %s (%d functions)\n", pkg, len(result.Packages[pkg]))
+	}
+
+	if outputDir != "" {
+		g := generate.NewForProject(matches, userInstructions, result.UserFunctions, result.Packages)
+		if err := g.WriteProject(outputDir, goModule); err != nil {
+			fmt.Fprintf(os.Stderr, "write project: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "\nProject written to: %s\n", outputDir)
+	} else {
+		g := generate.New(matches, userInstructions)
+		fmt.Print(g.Generate())
+	}
+}
+
+func buildSymLookup(b binary.Binary) disasm.SymLookup {
+	syms, err := b.Symbols()
+	if err != nil {
+		return nil
+	}
+	entries := make([]disasm.SymbolEntry, 0, len(syms))
+	for _, s := range syms {
+		if s.Name != "" && s.Size > 0 {
+			entries = append(entries, disasm.SymbolEntry{
+				Name:    s.Name,
+				Address: s.Address,
+				Size:    s.Size,
+			})
+		}
+	}
+	return disasm.BuildSymLookup(entries)
 }
 
 func cmdPatternsList(args []string) {

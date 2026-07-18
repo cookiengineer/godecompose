@@ -1,175 +1,287 @@
 # Godecompose Architecture
 
-## Project Purpose
+## Overview
 
-Godecompose is a **decompiler framework** focused on decompilation of amd64 (x86_64) binaries via pattern matching against a pattern database, rather than classical iterative decompilation.
+Godecompose is a **pattern-based decompiler** built as a Go library with a CLI frontend. It recovers Go source code from compiled binaries by matching known compiler output patterns against disassembled machine code.
 
-The core idea: instead of trying to reverse engineer what was lost between source → compilation → assembly, we identify _known patterns_ in the assembly output and map them back to source code. This approach is particularly effective for:
-- Statically linked Go binaries (large, but with recognizable runtime patterns)
-- Libraries with known compilation patterns (OpenSSL, zlib, etc.)
-- Syscall wrappers that follow predictable calling conventions
-
-## Design Principles
-
-1. **Framework-first**: All packages are public and importable. The `cmd/godecompose` CLI is one consumer of the framework.
-2. **Pure Go**: No CGo dependencies. Disassembly uses `golang.org/x/arch/x86/x86asm`.
-3. **Pattern-driven**: Decompilation quality scales with the pattern database, not with algorithm sophistication.
-4. **Positive-style branches**: Early returns, guard clauses, minimal nesting.
-5. **Human-readable code**: Descriptive variable names, clear function boundaries, no clever tricks.
-
-## Pipeline
+The pipeline flows: **binary → parse → disassemble → recover functions → match patterns → generate source**.
 
 ```
-Binary File (ELF / PE / Mach-O)
-    │
-    ▼
-┌─────────────────────────────────┐
-│ binary package                  │  Parse binary format headers
-│ └─ elf / pe / macho subpackages │  Extract sections, symbols, entry point
-└───────────────┬─────────────────┘
-                │ .text section bytes
-                ▼
-┌─────────────────────────────────┐
-│ disasm package                  │  Decode x86_64 instructions
-│ └─ DecodeStream() → []Inst      │  Produce linear instruction stream
-│ └─ BuildCFG() → []BasicBlock    │  Construct control flow graph
-│ └─ goasm subpackage             │  Go Plan 9 dialect handling, ABI detection
-└───────────────┬─────────────────┘
-                │ []Inst + CFG
-                ▼
-┌─────────────────────────────────┐
-│ function package                │  Recover function boundaries
-│ └─ ParsePclntab() (Go binaries) │  Go: use pclntab for precise boundaries
-│ └─ HeuristicRecovery()          │  Generic: prologue/epilogue heuristics
-└───────────────┬─────────────────┘
-                │ []Function with basic blocks
-                ▼
-┌─────────────────────────────────┐
-│ pattern package                 │  ImHex-compatible pattern language
-│ └─ lang/ (lexer, parser, AST)   │  Lex and parse .hexpat pattern files
-│ └─ matcher/ (instruction match) │  Match compiled patterns against instream
-│ └─ generate/ (source output)    │  Generate source code from matched patterns
-└───────────────┬─────────────────┘
-                │ Matched patterns + variable bindings
-                ▼
-┌─────────────────────────────────┐
-│ database package                │  Pattern database management
-│ └─ syscall subpackage           │  Syscall tables (Linux, Windows, Darwin, BSD)
-│ └─ Pattern index + lookup       │  Fast opcode-indexed pattern retrieval
-└───────────────┬─────────────────┘
-                │ Compiled patterns, syscall metadata
-                ▼
-┌─────────────────────────────────┐
-│ cmd/godecompose (CLI consumer)  │  User-facing commands
-│ └─ disasm, decompile, patterns  │  Orchestrates the pipeline
-└─────────────────────────────────┘
+                         ┌─────────────────────┐
+                         │   Binary (ELF/PE/   │
+                         │   Mach-O)           │
+                         └─────────┬───────────┘
+                                   │
+                         ┌─────────▼───────────┐
+                         │  binary.Open()      │
+                         │  Format detection   │
+                         │  Section extraction │
+                         │  Symbol table       │
+                         │  Go build info      │
+                         │  pclntab section    │
+                         └─────────┬───────────┘
+                                   │
+                    ┌──────────────┼──────────────┐
+                    │              │              │
+            ┌───────▼──────┐ ┌────▼─────┐ ┌──────▼──────┐
+            │ disasm       │ │ function │ │ pattern/lang │
+            │ DecodeStream │ │ pclntab  │ │ Lexer/Parser │
+            │ GoSyntax     │ │ classify │ │ AST/Evaluate │
+            │ SymLookup    │ │ filter   │ │ Compile      │
+            └───────┬──────┘ └────┬─────┘ └──────┬──────┘
+                    │              │              │
+                    │    ┌─────────▼─────────┐    │
+                    │    │ ClassifyFunction  │    │
+                    │    │ User/Runtime/     │    │
+                    │    │ Stdlib/Vendor     │    │
+                    │    └─────────┬─────────┘    │
+                    │              │              │
+                    │    ┌─────────▼─────────┐    │
+                    │    │ Filter user fns   │    │
+                    │    │ Only user insts   │    │
+                    │    └─────────┬─────────┘    │
+                    │              │              │
+                    │    ┌─────────▼─────────┐    │
+                    └────┤ pattern/matcher   ├────┘
+                         │ Opcode-indexed    │
+                         │ fuzzy CALL match  │
+                         │ operand capture   │
+                         └─────────┬─────────┘
+                                   │
+                         ┌─────────▼───────────┐
+                         │ pattern/generate    │
+                         │ Template expansion  │
+                         │ Project generation  │
+                         └─────────────────────┘
 ```
 
-## Package Layout
+## Component Design
+
+### 1. Binary Parsers (`binary/`, `elf/`, `pe/`, `macho/`)
+
+**Interface**: `binary.Binary` defines the common API for all binary formats.
+
+```go
+type Binary interface {
+    Format() Format
+    Architecture() types.Arch
+    EntryPoint() uint64
+    Sections() []Section
+    Section(name string) (Section, bool)
+    Symbols() ([]Symbol, error)
+    GoBuildInfo() (*GoBuildInfo, bool)
+    Pclntab() ([]byte, uint64, bool)
+    IsPIE() bool
+    IsStripped() bool
+    ByteOrder() binary.ByteOrder
+    Close() error
+}
+```
+
+**Format detection**: `binary.Open(path)` reads the first 4 bytes and dispatches:
+- `0x7F ELF` → `elf.Open()`
+- `MZ` → `pe.Open()`
+- `0xFEEDFACE` / `0xCFFAEDFE` / `0xCAFEBABE` → `macho.Open()`
+
+**Go-specific extraction**:
+- ELF: `.go.buildinfo` section (V1/V2 format), `.gopclntab` section, `.note.go.buildid`
+- PE: `.go.buildinfo` section, `.gopclntab` section
+- Mach-O: `__go_buildinfo` section, `__gopclntab` section
+
+**Registry pattern**: Each format package registers itself via `init()`:
+```go
+func init() {
+    binary.RegisterFormat(binary.FormatELF, func(path string) (binary.Binary, error) {
+        return Open(path)
+    })
+}
+```
+
+### 2. Disassembler (`disasm/`)
+
+Uses `golang.org/x/arch/x86/x86asm` for pure-Go x86_64 instruction decoding.
+
+```go
+type Instruction struct {
+    Address       uint64
+    Bytes         []byte
+    Opcode        string       // e.g., "MOV", "CALL", "JMP"
+    IntelSyntax   string       // Intel syntax: "mov rax, rbx"
+    GoSyntax      string       // Plan 9 syntax: "MOVQ BX, AX"
+    IsCall        bool
+    IsReturn      bool
+    IsBranch      bool
+    IsConditional bool
+    BranchTarget  uint64
+    Size          int
+}
+```
+
+**Symbol resolution**: `DecodeStreamWithSymbols(data, baseAddr, lookup)` passes a `SymLookup` function to `x86asm.GoSyntax()`. This resolves PC-relative CALL targets to symbol names:
 
 ```
-godecompose/
-├── cmd/godecompose/          # CLI tool (consumes the framework)
-│   └── main.go
-│
-├── types/                    # Shared types: Arch, Platform, enums
-│
-├── binary/                   # Common interface + format detection (public API)
-│   ├── binary.go             # Binary interface, Section, Symbol, registry, Open()
-│   ├── detect_test.go        # Format detection unit tests
-│   └── binary_test.go        # Integration tests (external package)
-│
-├── elf/                      # ELF parser (wraps debug/elf, imports binary)
-├── pe/                       # PE/COFF parser (wraps debug/pe, imports binary)
-├── macho/                    # Mach-O parser (wraps debug/macho, imports binary)
-│
-├── disasm/                   # Disassembly layer (public API)
-│   ├── disasm.go             # Core: Instruction, DecodeStream, branch detection
-│   ├── cfg.go                # Control flow graph construction
-│   ├── goasm/                # Go Plan 9 assembly dialect support
-│   └── syntax/               # Assembly syntax formatters
-│
-├── function/                 # Function boundary recovery (public API)
-│   ├── function.go           # Function, Variable, RecoverResult types
-│   └── pclntab.go            # Go pclntab parser + symbol/heuristic recovery
-│
-├── goutil/                   # Test helpers for cross-compilation
-│
-├── e2e/                      # End-to-end integration tests
-│
-├── pattern/                  # Pattern language engine (public API)
-│   ├── lang/                 # ImHex-compatible pattern language
-│   │   ├── token/            # Token types and keywords
-│   │   ├── lexer/            # Hand-written lexer
-│   │   ├── parser/           # Recursive descent parser with backtracking
-│   │   ├── ast/              # AST node hierarchy (30+ node types)
-│   │   ├── preprocessor/     # #include, #define, #pragma support
-│   │   ├── validator/        # Type checking and semantic analysis
-│   │   └── evaluator/        # Tree-walking interpreter
-│   ├── matcher/              # Assembly instruction pattern matching engine
-│   └── generate/             # Source code generation from matched patterns
-│
-├── database/                 # Pattern database (public API)
-│   ├── database.go           # Loader, indexer, query interface
-│   └── syscall/              # Syscall table types + per-platform data
-│
-├── patterns/                 # Shipped pattern files
-│   ├── kernels/              # Syscall tables per kernel
-│   │   ├── linux/
-│   │   ├── windows/
-│   │   ├── darwin/
-│   │   └── freebsd/
-│   └── libs/                 # Library-specific decompilation patterns
-│       ├── golang/
-│       └── openssl/
-│
-├── testdata/                 # Test binaries for integration tests
-├── docs/                     # Technical documentation
-├── go.mod
-├── go.sum
-├── Makefile
-└── README.md
+nil lookup:    CALL 0x49fc25
+with lookup:   CALL fmt.Fprintln(SB)
 ```
+
+**SymLookup construction**: `BuildSymLookup(symbols)` builds an address→name map from the binary's symbol table:
+
+```go
+type SymLookup func(addr uint64) (name string, base uint64)
+```
+
+**CFG building**: `BuildControlFlowGraph(instructions, entryPoints)` identifies basic block leaders at jump targets, call targets, and RET successors. Builds predecessor/successor edges for control flow analysis.
+
+**Go-specific** (`disasm/goasm/`): Maps x86asm register names to Plan 9 assembler names (RAX→AX, R14→R14), detects ABI (ABI0 vs ABIInternal), classifies special registers (goroutine pointer, closure context, zero register).
+
+### 3. Function Recovery (`function/`)
+
+**pclntab parser**: Supports Go 1.2, 1.16, and 1.18+ pclntab formats. Extracts function entry points from the PC-line table:
+- Go 1.2: Magic `0xFFFFFFFA`, fixed-size entries
+- Go 1.16: Magic `0xFFFFFFFB`, compact format
+- Go 1.18+: Magic `0xFFFFFFF0`/`0xFFFFFFF1`, generics-aware
+
+**Symbol merging**: Matches pclntab entry points against symbol table addresses to assign function names.
+
+**Function classification**: Each recovered function is classified:
+
+| Class | Criteria | Examples |
+|---|---|---|
+| `ClassUser` | `main.*` or module-prefixed | `main.main`, `mymod/pkg.Func` |
+| `ClassRuntime` | `runtime.*`, `type:.*`, `_rt0_*` | `runtime.memmove` |
+| `ClassStdlib` | `fmt.*`, `sync.*`, `encoding/*`, etc. | `fmt.Println` |
+| `ClassInternal` | `internal/*` | `internal/poll.FD.Init` |
+| `ClassVendor` | Other dotted names | Third-party deps |
+
+**User function filtering**: Only `ClassUser` functions pass through to the pattern matcher. Runtime and stdlib functions are skipped, reducing instruction count from ~180K to ~80 for a typical program.
+
+**Module name extraction**: The Go module path is detected from:
+1. `GoBuildInfo.Main` (if build info is parsed correctly)
+2. `GoBuildInfo.Path` (if valid, not a Go version string)
+3. Longest common prefix from non-stdlib symbol names (fallback)
+
+### 4. Pattern Language Engine (`pattern/lang/`)
+
+Implements an ImHex-compatible pattern language with decompilation extensions.
+
+**Pipeline**: `Source → Lexer → Preprocessor → Parser → Validator → Evaluator`
+
+**Lexer**: Hand-written single-pass scanner. Supports:
+- All ImHex token types (keywords, value types, operators, separators)
+- Numeric literals: decimal, hex `0x`, octal `0o`, binary `0b`
+- String/char literals with escape sequences
+- 35+ compound operators with greedy max-length matching
+- Nested block comments `/* /* */ */`
+- Preprocessor directive detection (`#include`, `#define`, etc.)
+
+**Parser**: Recursive descent with backtracking. Full operator precedence table (13 levels). Supports:
+- All ImHex constructs: struct/union/enum/bitfield, variables, functions, control flow
+- **Godecompose extensions**: `pattern`, `instr`, `gen`, `bind`, `arch`, `platform`
+- Assembly-specific: opcode detection heuristic, register recognition, addressing modes `(base)(index*scale)`
+- Backtracking via `mark()`/`reset()` for cast vs. parenthesized expression disambiguation
+
+**AST**: 40+ node types. All standard ImHex nodes plus:
+- `PatternDefinition`, `InstrBlock`, `InstructionPattern`, `OperandPattern`, `MemoryRefPattern`
+- `GenBlock`, `GenText`, `GenExpr`, `GenConditional`, `GenLoop`
+- `BindBlock`, `BindEntry`, `ArchDirective`, `PlatformDirective`
+
+**Evaluator**: Tree-walking interpreter. Produces `CompiledPattern` structures:
+- Instruction sequences compiled from `instr` blocks
+- Gen templates with variable substitution markers
+- Binding tables mapping capture variables to aliases
+
+### 5. Pattern Matcher (`pattern/matcher/`)
+
+**Pre-filtering**: Patterns are indexed by their first instruction's opcode (`byOpcode` map). For each CALL instruction, only CALL-based patterns are considered.
+
+**CALL matching**: `instructionMatches()` uses a multi-strategy fuzzy matcher:
+
+1. **Exact substring**: Check if the GoSyntax contains the pattern's expected function name
+2. **Case-insensitive**: Lowercase both the GoSyntax and the expected name
+3. **Prefix matching**: Normalize separators (`.`, `(`, `)`, `/`, `*` → space), split into words, match each target word as a prefix against GoSyntax words
+
+This handles Go's symbol name variations:
+```
+Pattern:  sync_Mutex_Lock  → target "sync.Mutex.Lock"
+GoSyntax: CALL sync.(*Mutex).lockSlow(SB)  → normalizes to "call sync mutex lockslow sb"
+Target:   "sync mutex lock"  → each word found as prefix → MATCH
+```
+
+**Operand matching**: `matchOperands()` compares pattern operand constraints against disassembled instruction operands. Supports:
+- Wildcard (`_`): matches anything
+- Immediate (`$imm`): matches immediate values
+- Register (`RAX`, `X0`): exact register match
+- Capture variable (`src`): captures the matched operand value
+
+**Conflict resolution**: Matches are sorted by confidence (longer, more specific patterns score higher). Overlapping matches are resolved by preferring the highest-confidence match.
+
+### 6. Code Generator (`pattern/generate/`)
+
+**Template expansion**: `expandTemplate()` substitutes `$variable` placeholders with captured values or binding aliases.
+
+**Flat output** (`Generate()`): Produces a single text stream with matched gen templates and unresolved code comments.
+
+**Project output** (`WriteProject()`): Groups functions by Go package path and writes a directory structure:
+- `go.mod` with the detected module name
+- `main.go` for the `main` package with `func main()` entry point
+- Sub-package directories with `.go` files for each recovered package
+
+### 7. Pattern Database (`database/`)
+
+**Loading**: `LoadPatternsFromDir()` recursively walks a directory, lexes/parses/evaluates each `.hexpat` file, and adds compiled patterns to the database.
+
+**Indexing**: Patterns are indexed by first opcode for fast matcher pre-filtering.
+
+**Filtering**: `FindPatterns(arch, platform)` returns patterns matching the target binary's architecture and platform.
+
+**Syscall tables**: JSON files in `patterns/kernels/` provide per-platform syscall number→name mappings. Four tables included:
+- Linux x86_64: 137 syscalls
+- Windows NT 10.0: 121 syscalls
+- Darwin/macOS: 70 syscalls
+- FreeBSD: 57 syscalls
+
+### 8. CLI (`cmd/godecompose/`)
+
+| Command | Description |
+|---|---|
+| `info <binary>` | Format, arch, sections, symbols, Go build info |
+| `disasm <binary>` | Disassemble, recover functions, show user code summary |
+| `decompile <binary> [--output=<dir>]` | Full pipeline with pattern matching and source generation |
+| `patterns list` | List loaded patterns and syscall tables with statistics |
+| `patterns validate <file>` | Validate a `.hexpat` pattern file through lex→parse→validate→evaluate |
 
 ## Key Design Decisions
 
-### Why Pattern Matching Instead of Classical Decompilation?
+### Why pattern matching instead of classical decompilation?
 
-Classical decompilers (Hex-Rays, Ghidra) use iterative algorithms:
-1. Lift assembly to an intermediate representation (IR)
-2. Apply simplification passes (SSA, copy propagation, dead code elimination)
-3. Perform type recovery via constraint solving
-4. Structure control flow (gotos → if/while/for)
-5. Emit C-like pseudo-code
+Classical decompilers (Hex-Rays, Ghidra) lift assembly to IR, apply simplification passes, recover types, structure control flow, and emit pseudo-code. This works for C/C++ but struggles with:
+- **Go binaries**: Unusual calling convention, runtime coupling, static linking
+- **Heavily optimized code**: Inlined functions, vectorized loops
+- **Scale**: Go binaries are large (runtime included) — classical decompilation is slow
 
-This works well for C/C++ but struggles with:
-- Go binaries (unusual calling convention, runtime-coupled code)
-- Heavily optimized code (inlined functions, vectorized loops)
-- Statically linked binaries (massive code volume)
+Pattern matching inverts the problem: instead of reconstructing what was lost, we recognize what was produced. Go's SSA-based compiler produces consistent code patterns for language constructs, making this approach viable.
 
-Pattern matching inverts the problem: instead of trying to _reconstruct_ what was lost, we _recognize_ what was produced. This is faster and more reliable for common patterns, at the cost of being incomplete for novel code.
+### Why symbol-based matching for high-level patterns?
 
-### Why ImHex Compatibility?
+Go binaries include symbol tables by default (`go build` without `-ldflags="-s"`). This means CALL instructions resolve to human-readable names like `CALL fmt.Fprintln(SB)`. By matching against these symbol names, we can identify function calls with high confidence without needing to understand the surrounding instruction sequence.
 
-[ImHex PatternLanguage](https://github.com/WerWolv/PatternLanguage) is:
-- Well-documented and actively maintained
-- Already designed for binary data pattern description
-- Has a familiar C-like/Rust-like syntax
-- Can potentially share patterns with the ImHex ecosystem (binary format descriptions)
+### Why focus on user code?
 
-We extend it with assembly-matching and source-generation constructs (`instr`, `gen`, `bind` blocks).
+A typical Go binary contains ~180K instructions, of which ~95% are runtime and stdlib. Decompiling all of it produces unreadable output. By classifying functions using pclntab names and filtering to user code only, we reduce the decompilation target to ~80 instructions — making the output clean and focused.
 
-### Why Pure Go?
+### Why pure Go?
 
 - Single binary distribution (no C libraries to link)
 - Cross-compilation trivial (`GOOS=linux GOARCH=amd64 go build`)
-- Go's toolchain already includes production-quality x86 decoding (`golang.org/x/arch`)
+- Go's `x/arch/x86/x86asm` provides production-quality x86 decoding
 - No build system complexity (no CMake, no CGo)
 
-### Why Go Binaries First?
+## Dependencies
 
-Go binaries have distinctive characteristics that make them ideal for pattern-matching decompilation:
-- The `pclntab` section provides exact function boundaries and names
-- The runtime is large but highly predictable (same patterns across all Go programs)
-- Go's SSA-based compiler produces consistent code patterns for language constructs
-- Statically linked → no dynamic linking ambiguities
+| Package | Purpose | Pure Go |
+|---|---|---|
+| `golang.org/x/arch/x86/x86asm` | x86_64 instruction decoder | Yes |
+| `debug/elf` (stdlib) | ELF parsing | Yes |
+| `debug/pe` (stdlib) | PE/COFF parsing | Yes |
+| `debug/macho` (stdlib) | Mach-O parsing | Yes |
+| `encoding/json` (stdlib) | Syscall table loading | Yes |

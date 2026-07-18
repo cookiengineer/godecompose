@@ -1,6 +1,32 @@
 # Roadmap
 
+All phases complete. The project is in active development with 322 patterns, 4 syscall tables, and full decompilation pipeline with project generation.
+
 ## Phase 1: Foundation — Binary Format Parsers ✓
+[...]
+
+## Phase 9: User-Code Focus and Project Generation ✓
+
+**Completed.** Filters runtime noise, recovers package structure, and generates Go project directories.
+
+### Completed Tasks
+
+- [x] Function classification: `ClassUser`, `ClassRuntime`, `ClassStdlib`, `ClassInternal`, `ClassVendor`
+- [x] User-code-only decompilation: skip runtime/stdlib, match patterns only against user function instructions
+- [x] Package path extraction from symbol names: `testproject/utils.Greet` → pkg `testproject/utils`, name `Greet`
+- [x] Module name detection: GoBuildInfo + symbol-based fallback
+- [x] Project directory generation: `go.mod` + `main.go` + sub-package `.go` files
+- [x] CLI `--output=<dir>` flag for project output
+- [x] E2E tests verify user-function filtering and project generation
+
+### Realized API
+
+- `function.ParsePackageName(fullName) (pkgPath, shortName)`
+- `function.ClassifyFunction(name, mainPackage) Classification`
+- `RecoverResult.Packages` — functions grouped by package path
+- `generate.WriteProject(dir, goModule)` — writes complete Go project directory
+
+---
 
 **Completed.** Parses ELF, PE, and Mach-O binaries through a unified API.
 

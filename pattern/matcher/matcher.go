@@ -172,6 +172,7 @@ func instructionMatches(inst disasm.Instruction, pat evaluator.CompiledInstructi
 			if fuzzyMatchCall(inst.GoSyntax, target) || fuzzyMatchCall(inst.IntelSyntax, target) {
 				return true
 			}
+			return false
 		}
 	}
 

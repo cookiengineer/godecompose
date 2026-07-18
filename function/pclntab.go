@@ -4,6 +4,7 @@ import (
 	encodingbinary "encoding/binary"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/cookiengineer/godecompose/binary"
 	"github.com/cookiengineer/godecompose/disasm"
@@ -14,11 +15,26 @@ func RecoverFromBinary(bin binary.Binary, instructions []disasm.Instruction) (*R
 	result := &RecoverResult{}
 
 	pclntab, pclntabAddr, hasPclntab := bin.Pclntab()
-	_, hasGoInfo := bin.GoBuildInfo()
+	goInfo, hasGoInfo := bin.GoBuildInfo()
+
+	// Set the main package path for classification
+	if hasGoInfo && goInfo != nil {
+		result.GoMainPackage = goInfo.Main
+	}
+	if result.GoMainPackage == "" && hasGoInfo && goInfo != nil && goInfo.Path != "" {
+		if isValidModulePath(goInfo.Path) {
+			result.GoMainPackage = goInfo.Path
+		}
+	}
 
 	syms, symsErr := bin.Symbols()
 	if symsErr != nil {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("symbols: %v", symsErr))
+	}
+
+	if result.GoMainPackage == "" {
+		// Fallback: extract from function symbols
+		result.GoMainPackage = extractModuleFromSymbols(syms)
 	}
 
 	if hasPclntab && len(pclntab) > 0 {
@@ -33,6 +49,7 @@ func RecoverFromBinary(bin binary.Binary, instructions []disasm.Instruction) (*R
 				f.Blocks = extractFunctionBlocks(instructions, f.EntryPoint, f.EndAddr)
 			}
 			result.Functions = funcs
+			result.FilterUserFunctions()
 			return result, nil
 		}
 	}
@@ -42,6 +59,7 @@ func RecoverFromBinary(bin binary.Binary, instructions []disasm.Instruction) (*R
 		f.Blocks = extractFunctionBlocks(instructions, f.EntryPoint, f.EndAddr)
 	}
 	result.Functions = funcs
+	result.FilterUserFunctions()
 
 	if len(funcs) == 0 {
 		funcs = recoverByHeuristics(instructions, bin.EntryPoint())
@@ -322,4 +340,85 @@ func funcTabSizeV116() int64 {
 
 func funcTabSizeV12() uint32 {
 	return 8
+}
+
+// extractModuleFromSymbols inspects function symbols to determine the
+// Go module path. It looks for names like "example.com/mod/pkg.Func"
+// and returns the longest common prefix before the first slash.
+func extractModuleFromSymbols(syms []binary.Symbol) string {
+	moduleCounts := make(map[string]int)
+	for _, s := range syms {
+		if s.Type != binary.SymbolFunction || s.Name == "" {
+			continue
+		}
+		if strings.HasPrefix(s.Name, "main.") || strings.HasPrefix(s.Name, "runtime.") {
+			continue
+		}
+		lastDot := strings.LastIndex(s.Name, ".")
+		if lastDot < 0 {
+			continue
+		}
+		pkgPath := s.Name[:lastDot]
+		if pkgPath == "" || strings.ContainsAny(pkgPath, "()") {
+			continue
+		}
+		// Find the module root (first component before slash or dot)
+		slashIdx := strings.Index(pkgPath, "/")
+		dotIdx := strings.Index(pkgPath, ".")
+		moduleEnd := len(pkgPath)
+		if slashIdx > 0 {
+			moduleEnd = slashIdx
+		} else if dotIdx > 0 {
+			moduleEnd = dotIdx
+		}
+		module := pkgPath[:moduleEnd]
+		if module != "" && !isStdlibModule(module) {
+			moduleCounts[module]++
+		}
+	}
+
+	best := ""
+	bestCount := 0
+	for m, c := range moduleCounts {
+		if c > bestCount {
+			best = m
+			bestCount = c
+		}
+	}
+	return best
+}
+
+func isStdlibModule(name string) bool {
+	stdlib := []string{
+		"fmt", "sync", "os", "io", "time", "net", "http",
+		"strings", "bytes", "strconv", "errors", "log", "flag",
+		"math", "sort", "path", "context", "reflect", "regexp",
+		"encoding", "crypto", "bufio", "archive", "compress",
+		"database", "debug", "go", "hash", "image", "index",
+		"mime", "text", "unicode", "syscall", "container",
+		"internal", "runtime",
+	}
+	for _, s := range stdlib {
+		if name == s {
+			return true
+		}
+	}
+	return false
+}
+
+// isValidModulePath checks if a string looks like a valid Go module path
+// (no control characters, starts with a letter).
+func isValidModulePath(path string) bool {
+	if len(path) == 0 || len(path) > 256 {
+		return false
+	}
+	if path[0] < 'a' || path[0] > 'z' {
+		return false
+	}
+	for _, ch := range path {
+		if ch < 0x20 || ch > 0x7e {
+			return false
+		}
+	}
+	return true
 }

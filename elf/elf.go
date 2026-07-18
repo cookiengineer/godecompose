@@ -324,8 +324,9 @@ func decodeGoBuildInfoV1(data []byte) *binary.GoBuildInfo {
 		return string(b), true
 	}
 
-	info.Path, _ = readString()
+	// V1 format: Version, Path, Main, then deps and settings
 	info.Version, _ = readString()
+	info.Path, _ = readString()
 	info.Main, _ = readString()
 
 	numDeps, ok := readUVarint()
