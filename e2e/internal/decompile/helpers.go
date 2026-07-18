@@ -1,4 +1,4 @@
-package e2e
+package decompile
 
 import (
 	"os"
@@ -21,11 +21,12 @@ import (
 	_ "github.com/cookiengineer/godecompose/pe"
 )
 
-func compileAndOpen(t *testing.T, name string) binary.Binary {
+// CompileAndOpen compiles a testdata/src/<name> Go program for linux/amd64 and opens the binary.
+func CompileAndOpen(t *testing.T, name string) binary.Binary {
 	t.Helper()
 	_, thisFile, _, _ := runtime.Caller(0)
 	baseDir := filepath.Dir(thisFile)
-	srcDir := filepath.Join(baseDir, "..", "testdata", "src", "e2e_"+name)
+	srcDir := filepath.Join(baseDir, "..", "..", "..", "testdata", "src", name)
 
 	dir := t.TempDir()
 	outPath := filepath.Join(dir, name)
@@ -34,7 +35,7 @@ func compileAndOpen(t *testing.T, name string) binary.Binary {
 	cmd.Dir = srcDir
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("compile e2e_%s: %v\n%s", name, err, out)
+		t.Fatalf("compile %s: %v\n%s", name, err, out)
 	}
 
 	b, err := binary.Open(outPath)
@@ -45,14 +46,16 @@ func compileAndOpen(t *testing.T, name string) binary.Binary {
 	return b
 }
 
-type decompileResult struct {
-	matches      []matcher.Match
-	output       string
-	instructions []disasm.Instruction
-	result       *function.RecoverResult
+// Result holds the output of a decompilation run.
+type Result struct {
+	Matches      []matcher.Match
+	Output       string
+	Instructions []disasm.Instruction
+	FuncResult   *function.RecoverResult
 }
 
-func decompileBinary(t *testing.T, b binary.Binary) decompileResult {
+// Decompile runs the full decompile pipeline on a binary.
+func Decompile(t *testing.T, b binary.Binary) Result {
 	t.Helper()
 
 	textSection, ok := b.Section(".text")
@@ -66,7 +69,6 @@ func decompileBinary(t *testing.T, b binary.Binary) decompileResult {
 		t.Fatalf("DecodeStream: %v", err)
 	}
 
-	// Recover and classify functions first
 	result, err := function.RecoverFromBinary(b, instructions)
 	if err != nil {
 		t.Logf("function recovery: %v", err)
@@ -85,7 +87,6 @@ func decompileBinary(t *testing.T, b binary.Binary) decompileResult {
 	t.Logf("functions: %d total (runtime: %d, stdlib: %d, user: %d)",
 		len(result.Functions), runtimeCount, stdlibCount, len(result.UserFunctions))
 
-	// Only match against user function instructions
 	var userInstructions []disasm.Instruction
 	for _, f := range result.UserFunctions {
 		for _, inst := range instructions {
@@ -96,10 +97,9 @@ func decompileBinary(t *testing.T, b binary.Binary) decompileResult {
 	}
 	t.Logf("user instructions: %d / %d total", len(userInstructions), len(instructions))
 
-	// Load patterns and match
 	_, thisFile, _, _ := runtime.Caller(0)
 	baseDir := filepath.Dir(thisFile)
-	patternsDir := filepath.Join(baseDir, "..", "patterns")
+	patternsDir := filepath.Join(baseDir, "..", "..", "..", "patterns")
 
 	db := database.New()
 	_ = db.LoadSyscallsFromDir(filepath.Join(patternsDir, "kernels"))
@@ -117,12 +117,55 @@ func decompileBinary(t *testing.T, b binary.Binary) decompileResult {
 	g := generate.New(matches, userInstructions)
 	output := g.Generate()
 
-	return decompileResult{
-		matches:      matches,
-		output:       output,
-		instructions: userInstructions,
-		result:       result,
+	return Result{
+		Matches:      matches,
+		Output:       output,
+		Instructions: userInstructions,
+		FuncResult:   result,
 	}
+}
+
+// AssertPipelineOk checks that the decompile pipeline produced non-empty results.
+func AssertPipelineOk(t *testing.T, r Result, category string) {
+	t.Helper()
+	if len(r.Instructions) == 0 {
+		t.Errorf("%s: no instructions decoded", category)
+	}
+	if r.FuncResult == nil || len(r.FuncResult.Functions) == 0 {
+		t.Errorf("%s: no functions recovered", category)
+	}
+	if len(r.Output) == 0 {
+		t.Errorf("%s: no decompiler output", category)
+	}
+}
+
+// HasMatch returns true if any match name contains the given substring.
+func HasMatch(matches []matcher.Match, nameSubstr string) bool {
+	for _, m := range matches {
+		if strings.Contains(m.Pattern.Name, nameSubstr) {
+			return true
+		}
+	}
+	return false
+}
+
+// LogMatches logs all matches at debug level.
+func LogMatches(t *testing.T, matches []matcher.Match) {
+	t.Helper()
+	for _, m := range matches {
+		t.Logf("  match: %s @ 0x%x (conf=%.2f)", m.Pattern.Name, m.StartAddr, m.Confidence)
+	}
+}
+
+// FilterMatchesByPackage returns matches whose name contains the package prefix.
+func FilterMatchesByPackage(matches []matcher.Match, pkgPrefix string) []matcher.Match {
+	var out []matcher.Match
+	for _, m := range matches {
+		if strings.Contains(m.Pattern.Name, pkgPrefix) {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func buildSymLookup(b binary.Binary) disasm.SymLookup {
@@ -141,89 +184,6 @@ func buildSymLookup(b binary.Binary) disasm.SymLookup {
 		}
 	}
 	return disasm.BuildSymLookup(entries)
-}
-
-func TestE2EFmt(t *testing.T) {
-	b := compileAndOpen(t, "fmt")
-	r := decompileBinary(t, b)
-
-	t.Logf("output: %d bytes, instructions: %d, functions: %d",
-		len(r.output), len(r.instructions), countFuncs(r.result))
-
-	assertPipelineOk(t, r, "fmt")
-
-	if !checkPatternMatch(r.matches, "fmt.Println") {
-		t.Log("fmt.Println not matched (may be inlined or no symbol table)")
-	}
-
-	for _, m := range r.matches {
-		t.Logf("  match: %s @ 0x%x (conf=%.2f)", m.Pattern.Name, m.StartAddr, m.Confidence)
-	}
-}
-
-func TestE2ESync(t *testing.T) {
-	b := compileAndOpen(t, "sync")
-	r := decompileBinary(t, b)
-
-	t.Logf("output: %d bytes, instructions: %d, functions: %d",
-		len(r.output), len(r.instructions), countFuncs(r.result))
-
-	assertPipelineOk(t, r, "sync")
-
-	for _, m := range r.matches {
-		if strings.Contains(m.Pattern.Name, "sync.") || strings.Contains(m.Pattern.Name, "fmt.") {
-			t.Logf("  match: %s @ 0x%x (conf=%.2f)", m.Pattern.Name, m.StartAddr, m.Confidence)
-		}
-	}
-}
-
-func TestE2EFullPipeline(t *testing.T) {
-	b := compileAndOpen(t, "sync")
-	r := decompileBinary(t, b)
-
-	t.Logf("Full pipeline: %d instructions, %d functions, %d matches, %d output bytes",
-		len(r.instructions), countFuncs(r.result), len(r.matches), len(r.output))
-
-	if len(r.output) == 0 {
-		t.Error("decompiler produced no output")
-	}
-
-	if countFuncs(r.result) == 0 {
-		t.Error("no functions recovered")
-	}
-
-	for _, m := range r.matches {
-		t.Logf("  %s @ 0x%x-0x%x (conf=%.2f)", m.Pattern.Name, m.StartAddr, m.EndAddr, m.Confidence)
-	}
-}
-
-func checkPatternMatch(matches []matcher.Match, nameSubstr string) bool {
-	for _, m := range matches {
-		if strings.Contains(m.Pattern.Name, nameSubstr) {
-			return true
-		}
-	}
-	return false
-}
-
-func assertPipelineOk(t *testing.T, r decompileResult, category string) {
-	t.Helper()
-	if len(r.instructions) == 0 {
-		t.Errorf("%s: no instructions decoded", category)
-	}
-	if countFuncs(r.result) == 0 {
-		t.Errorf("%s: no functions recovered", category)
-	}
-	if len(r.output) == 0 {
-		t.Errorf("%s: no decompiler output", category)
-	}
-}
-
-func countFuncs(r *function.RecoverResult) int {
-	if r == nil {
-		return 0
-	}
-	return len(r.Functions)
 }
 
 func platformGuess(b binary.Binary) types.Platform {

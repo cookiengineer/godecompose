@@ -1,6 +1,6 @@
 # Roadmap
 
-All phases complete. The project is in active development with 322 patterns, 4 syscall tables, and full decompilation pipeline with project generation.
+All phases complete. The project is in active development with 200+ patterns (stdlib + runtime + high-level), 4 syscall tables, and full decompilation pipeline with project generation. Every stdlib package has end-to-end tests (compile → disassemble → match → generate → verify).
 
 ## Phase 1: Foundation — Binary Format Parsers ✓
 [...]

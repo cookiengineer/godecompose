@@ -121,9 +121,21 @@ pattern strings_Builder_String {
     gen { $b.String(); }
     bind { b as "b"; }
 }
+pattern strings_Builder_WriteRune {
+    name: "strings.Builder.WriteRune";
+    library: "go-stdlib"; instr match { CALL strings___Builder__WriteRune }
+    gen { $b.WriteRune($r); }
+    bind { b as "b"; r as "r"; }
+}
 pattern strings_Builder_Reset {
     name: "strings.Builder.Reset";
     library: "go-stdlib"; instr match { CALL strings___Builder__Reset }
     gen { $b.Reset(); }
     bind { b as "b"; }
+}
+pattern strings_LastIndex {
+    name: "strings.LastIndex";
+    library: "go-stdlib"; instr match { CALL strings_LastIndex }
+    gen { strings.LastIndex($s, $substr); }
+    bind { s as "s"; substr as "substr"; }
 }

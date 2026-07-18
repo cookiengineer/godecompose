@@ -17,6 +17,10 @@ pattern bytes_Index {
     name: "bytes.Index"; library: "go-stdlib"; instr match { CALL bytes_Index }
     gen { bytes.Index($s, $sep); } bind { s as "s"; sep as "sep"; }
 }
+pattern bytes_LastIndex {
+    name: "bytes.LastIndex"; library: "go-stdlib"; instr match { CALL bytes_LastIndex }
+    gen { bytes.LastIndex($s, $sep); } bind { s as "s"; sep as "sep"; }
+}
 pattern bytes_Join {
     name: "bytes.Join"; library: "go-stdlib"; instr match { CALL bytes_Join }
     gen { bytes.Join($s, $sep); } bind { s as "s"; sep as "sep"; }

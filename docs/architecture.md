@@ -285,3 +285,49 @@ A typical Go binary contains ~180K instructions, of which ~95% are runtime and s
 | `debug/pe` (stdlib) | PE/COFF parsing | Yes |
 | `debug/macho` (stdlib) | Mach-O parsing | Yes |
 | `encoding/json` (stdlib) | Syscall table loading | Yes |
+
+## Project Structure
+
+```
+godecompose/
+├── binary/              # Common binary interface (ELF/PE/Mach-O abstraction)
+├── cmd/godecompose/     # CLI entry point
+├── database/            # Pattern database + syscall tables
+├── disasm/              # x86_64 disassembler + Go Plan 9 asm
+├── docs/                # Documentation
+├── e2e/
+│   ├── e2e_test.go              # Binary parsing/disassembly E2E tests
+│   ├── decompile/              # Per-package decompilation E2E tests
+│   │   ├── fmt/fmt_test.go
+│   │   ├── sync/sync_test.go
+│   │   └── ...
+│   └── internal/decompile/     # Shared test helpers
+├── elf/                 # ELF binary parser
+├── function/            # Function recovery (pclntab, classification)
+├── goutil/              # Go compilation test utilities
+├── macho/               # Mach-O binary parser
+├── pattern/             # Pattern language engine (lang/, matcher/, generate/)
+├── patterns/            # Pattern files (.hexpat) and syscall tables (JSON)
+│   └── libs/golang/
+│       ├── stdlib/      # Go stdlib patterns (one subdir per package)
+│       ├── runtime/     # Go runtime patterns
+│       └── highlevel/   # Single-CALL high-level patterns
+├── pe/                  # PE/COFF binary parser
+├── testdata/src/        # Test Go source programs (one subdir per package)
+├── types/               # Arch/Platform enums
+├── go.mod
+└── go.sum
+```
+
+### Adding a New Stdlib Pattern
+
+To add a new stdlib pattern, create three files in parallel directories:
+
+1. **Pattern**: `patterns/libs/golang/stdlib/<pkg>/<pkg>.hexpat`
+   - Add a `pattern` block matching the CALL instruction
+2. **Test source**: `testdata/src/<pkg>/main.go`
+   - Go program exercising the package functions
+3. **E2E test**: `e2e/decompile/<pkg>/<pkg>_test.go`
+   - Import `e2e/internal/decompile`, call `CompileAndOpen` + `Decompile`, assert pipeline OK
+
+The 1:1:1 mapping ensures every pattern has a corresponding end-to-end test.

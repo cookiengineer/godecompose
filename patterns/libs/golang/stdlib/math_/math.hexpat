@@ -28,3 +28,21 @@ pattern sort_Slice { name: "sort.Slice"; library: "go-stdlib"; instr match { CAL
 pattern sort_Search { name: "sort.Search"; library: "go-stdlib"; instr match { CALL sort_Search } gen { sort.Search($n, $f); } bind { n as "n"; f as "f"; } }
 pattern sort_Stable { name: "sort.Stable"; library: "go-stdlib"; instr match { CALL sort_Stable } gen { sort.Stable($data); } bind { data as "data"; } }
 pattern sort_IsSorted { name: "sort.IsSorted"; library: "go-stdlib"; instr match { CALL sort_IsSorted } gen { sort.IsSorted($data); } bind { data as "data"; } }
+
+pattern math_Log2 { name: "math.Log2"; library: "go-stdlib"; instr match { CALL math_Log2 } gen { math.Log2($x); } bind { x as "x"; } }
+pattern math_Log10 { name: "math.Log10"; library: "go-stdlib"; instr match { CALL math_Log10 } gen { math.Log10($x); } bind { x as "x"; } }
+pattern math_Remainder { name: "math.Remainder"; library: "go-stdlib"; instr match { CALL math_Remainder } gen { math.Remainder($x, $y); } bind { x as "x"; y as "y"; } }
+pattern math_Hypot { name: "math.Hypot"; library: "go-stdlib"; instr match { CALL math_Hypot } gen { math.Hypot($p, $q); } bind { p as "p"; q as "q"; } }
+
+pattern rand_Int31 { name: "math/rand.Int31"; library: "go-stdlib"; instr match { CALL math_rand_Int31 } gen { rand.Int31(); } }
+pattern rand_Int63 { name: "math/rand.Int63"; library: "go-stdlib"; instr match { CALL math_rand_Int63 } gen { rand.Int63(); } }
+pattern rand_Perm { name: "math/rand.Perm"; library: "go-stdlib"; instr match { CALL math_rand_Perm } gen { rand.Perm($n); } bind { n as "n"; } }
+pattern rand_Shuffle { name: "math/rand.Shuffle"; library: "go-stdlib"; instr match { CALL math_rand_Shuffle } gen { rand.Shuffle($n, $swap); } bind { n as "n"; swap as "swap"; } }
+pattern rand_Seed { name: "math/rand.Seed"; library: "go-stdlib"; instr match { CALL math_rand_Seed } gen { rand.Seed($seed); } bind { seed as "seed"; } }
+pattern rand_NewSource { name: "math/rand.NewSource"; library: "go-stdlib"; instr match { CALL math_rand_NewSource } gen { rand.NewSource($seed); } bind { seed as "seed"; } }
+pattern rand_Read { name: "math/rand.Read"; library: "go-stdlib"; instr match { CALL math_rand_Read } gen { rand.Read($p); } bind { p as "p"; } }
+
+pattern sort_SearchInts { name: "sort.SearchInts"; library: "go-stdlib"; instr match { CALL sort_SearchInts } gen { sort.SearchInts($a, $x); } bind { a as "a"; x as "x"; } }
+pattern sort_SearchStrings { name: "sort.SearchStrings"; library: "go-stdlib"; instr match { CALL sort_SearchStrings } gen { sort.SearchStrings($a, $x); } bind { a as "a"; x as "x"; } }
+pattern sort_SearchFloat64s { name: "sort.SearchFloat64s"; library: "go-stdlib"; instr match { CALL sort_SearchFloat64s } gen { sort.SearchFloat64s($a, $x); } bind { a as "a"; x as "x"; } }
+pattern sort_Reverse { name: "sort.Reverse"; library: "go-stdlib"; instr match { CALL sort_Reverse } gen { sort.Reverse($data); } bind { data as "data"; } }

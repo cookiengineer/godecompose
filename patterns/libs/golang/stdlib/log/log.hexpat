@@ -92,3 +92,22 @@ pattern log_Panic {
         args as "args";
     }
 }
+
+pattern log_Panicf {
+    name: "log.Panicf";
+    library: "go-stdlib";
+    description: "Logs a formatted message and panics";
+
+    instr match {
+        CALL log_Panicf
+    }
+
+    gen {
+        log.Panicf($format, $args...);
+    }
+
+    bind {
+        format as "fmt";
+        args as "args";
+    }
+}

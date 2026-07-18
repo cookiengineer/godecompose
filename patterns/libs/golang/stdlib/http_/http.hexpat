@@ -41,6 +41,26 @@ pattern http_Response_Body_Close {
     instr match { CALL net_http___Response__Body_Close }
     gen { $resp.Body.Close(); } bind { resp as "resp"; }
 }
+pattern http_ListenAndServeTLS {
+    name: "http.ListenAndServeTLS"; library: "go-stdlib";
+    instr match { CALL net_http_ListenAndServeTLS }
+    gen { http.ListenAndServeTLS($addr, $certFile, $keyFile, $handler); } bind { addr as "addr"; certFile as "certFile"; keyFile as "keyFile"; handler as "handler"; }
+}
+pattern http_PostForm {
+    name: "http.PostForm"; library: "go-stdlib";
+    instr match { CALL net_http_PostForm }
+    gen { http.PostForm($url, $data); } bind { url as "url"; data as "data"; }
+}
+pattern http_Head {
+    name: "http.Head"; library: "go-stdlib";
+    instr match { CALL net_http_Head }
+    gen { http.Head($url); } bind { url as "url"; }
+}
+pattern http_Request_WithContext {
+    name: "http.Request.WithContext"; library: "go-stdlib";
+    instr match { CALL net_http___Request__WithContext }
+    gen { $r.WithContext($ctx); } bind { r as "r"; ctx as "ctx"; }
+}
 
 pattern url_Parse {
     name: "url.Parse"; library: "go-stdlib";
@@ -67,6 +87,36 @@ pattern url_Values_Encode {
     instr match { CALL net_url___Values__Encode }
     gen { $v.Encode(); } bind { v as "v"; }
 }
+pattern url_ParseRequestURI {
+    name: "url.ParseRequestURI"; library: "go-stdlib";
+    instr match { CALL net_url_ParseRequestURI }
+    gen { url.ParseRequestURI($rawURL); } bind { rawURL as "rawURL"; }
+}
+pattern url_Values_Del {
+    name: "url.Values.Del"; library: "go-stdlib";
+    instr match { CALL net_url___Values__Del }
+    gen { $v.Del($key); } bind { v as "v"; key as "key"; }
+}
+pattern url_QueryEscape {
+    name: "url.QueryEscape"; library: "go-stdlib";
+    instr match { CALL net_url_QueryEscape }
+    gen { url.QueryEscape($s); } bind { s as "s"; }
+}
+pattern url_QueryUnescape {
+    name: "url.QueryUnescape"; library: "go-stdlib";
+    instr match { CALL net_url_QueryUnescape }
+    gen { url.QueryUnescape($s); } bind { s as "s"; }
+}
+pattern url_PathEscape {
+    name: "url.PathEscape"; library: "go-stdlib";
+    instr match { CALL net_url_PathEscape }
+    gen { url.PathEscape($s); } bind { s as "s"; }
+}
+pattern url_PathUnescape {
+    name: "url.PathUnescape"; library: "go-stdlib";
+    instr match { CALL net_url_PathUnescape }
+    gen { url.PathUnescape($s); } bind { s as "s"; }
+}
 
 pattern tls_Dial {
     name: "tls.Dial"; library: "go-stdlib";
@@ -82,6 +132,21 @@ pattern tls_LoadX509KeyPair {
     name: "tls.LoadX509KeyPair"; library: "go-stdlib";
     instr match { CALL crypto_tls_LoadX509KeyPair }
     gen { tls.LoadX509KeyPair($certFile, $keyFile); } bind { certFile as "certFile"; keyFile as "keyFile"; }
+}
+pattern tls_DialWithDialer {
+    name: "tls.DialWithDialer"; library: "go-stdlib";
+    instr match { CALL crypto_tls_DialWithDialer }
+    gen { tls.DialWithDialer($dialer, $network, $addr, $config); } bind { dialer as "dialer"; network as "network"; addr as "addr"; config as "config"; }
+}
+pattern tls_NewListener {
+    name: "tls.NewListener"; library: "go-stdlib";
+    instr match { CALL crypto_tls_NewListener }
+    gen { tls.NewListener($inner, $config); } bind { inner as "inner"; config as "config"; }
+}
+pattern tls_X509KeyPair {
+    name: "tls.X509KeyPair"; library: "go-stdlib";
+    instr match { CALL crypto_tls_X509KeyPair }
+    gen { tls.X509KeyPair($certPEMBlock, $keyPEMBlock); } bind { certPEMBlock as "certPEMBlock"; keyPEMBlock as "keyPEMBlock"; }
 }
 
 pattern net_Dial {
@@ -113,4 +178,44 @@ pattern net_JoinHostPort {
     name: "net.JoinHostPort"; library: "go-stdlib";
     instr match { CALL net_JoinHostPort }
     gen { net.JoinHostPort($host, $port); } bind { host as "host"; port as "port"; }
+}
+pattern net_ListenPacket {
+    name: "net.ListenPacket"; library: "go-stdlib";
+    instr match { CALL net_ListenPacket }
+    gen { net.ListenPacket($network, $address); } bind { network as "network"; address as "address"; }
+}
+pattern net_ResolveIPAddr {
+    name: "net.ResolveIPAddr"; library: "go-stdlib";
+    instr match { CALL net_ResolveIPAddr }
+    gen { net.ResolveIPAddr($network, $address); } bind { network as "network"; address as "address"; }
+}
+pattern net_ResolveUDPAddr {
+    name: "net.ResolveUDPAddr"; library: "go-stdlib";
+    instr match { CALL net_ResolveUDPAddr }
+    gen { net.ResolveUDPAddr($network, $address); } bind { network as "network"; address as "address"; }
+}
+pattern net_LookupHost {
+    name: "net.LookupHost"; library: "go-stdlib";
+    instr match { CALL net_LookupHost }
+    gen { net.LookupHost($host); } bind { host as "host"; }
+}
+pattern net_LookupAddr {
+    name: "net.LookupAddr"; library: "go-stdlib";
+    instr match { CALL net_LookupAddr }
+    gen { net.LookupAddr($addr); } bind { addr as "addr"; }
+}
+pattern net_InterfaceAddrs {
+    name: "net.InterfaceAddrs"; library: "go-stdlib";
+    instr match { CALL net_InterfaceAddrs }
+    gen { net.InterfaceAddrs(); }
+}
+pattern net_InterfaceByName {
+    name: "net.InterfaceByName"; library: "go-stdlib";
+    instr match { CALL net_InterfaceByName }
+    gen { net.InterfaceByName($name); } bind { name as "name"; }
+}
+pattern net_Conn_SetDeadline {
+    name: "net.Conn.SetDeadline"; library: "go-stdlib";
+    instr match { CALL net_Conn_SetDeadline }
+    gen { $conn.SetDeadline($t); } bind { conn as "conn"; t as "t"; }
 }
