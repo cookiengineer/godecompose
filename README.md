@@ -4,6 +4,79 @@
 
 Unlike classical decompilers that try to reverse-engineer what was lost during compilation, godecompose identifies _known patterns_ in the assembly output and maps them back to source code. It works especially well for Go because Go binaries are statically linked, include symbol tables by default, and the `pclntab` section provides exact function boundaries and names.
 
+## Example
+
+Take this Go program that uses `fmt`, `strings`, and `os`:
+
+```go
+// main.go
+package main
+
+import (
+    "fmt"
+    "os"
+    "strings"
+)
+
+func greet(name string) string {
+    s := fmt.Sprintf("hello, %s!", name)
+    return strings.ToUpper(s)
+}
+
+func main() {
+    for _, name := range os.Args[1:] {
+        fmt.Println(greet(name))
+    }
+}
+```
+
+### Build it
+
+```bash
+$ GOOS=linux GOARCH=amd64 go build -o app .
+```
+
+### Decompile it
+
+```bash
+$ godecompose disasm app
+
+Decoded 180725 instructions
+Functions: 1966 total
+  runtime:  1414 (skipped)
+  stdlib:   219 (skipped)
+  user:     2          ← only your code matters
+
+User functions:
+  main.greet @ 0x4a11a0 (blocks: 8)
+  main.main  @ 0x4a1220 (blocks: 9)
+```
+
+```bash
+$ godecompose decompile app
+
+// main.greet:
+s := fmt.Sprintf($format, $args...);   ← recovered from CALL fmt.Sprintf(SB)
+strings.ToUpper($s);                   ← recovered from CALL strings.ToUpper(SB)
+
+// main.main:
+fmt.Println($args...);                 ← recovered from CALL fmt.Fprintln(SB)
+```
+
+Each recovered line maps directly to a pattern in the database. The `$format`, `$args`, and `$s` are captured register variables from the pattern's `bind` block — in a full project generation pass (`--output`), these get resolved to concrete variable names.
+
+### Generate a project
+
+```bash
+$ godecompose decompile app --output=./recovered/
+
+./recovered/
+├── go.mod
+├── main.go              ← package main with reconstructed main()
+└── app/
+    └── greet.go         ← recovered greet()
+```
+
 ## Quick Start
 
 ```bash
@@ -23,42 +96,6 @@ go build ./cmd/godecompose/
 
 # Decompile to a Go project directory
 ./godecompose decompile ./myprogram --output=./recovered/
-```
-
-## What It Produces
-
-```
-$ ./godecompose disasm myprogram
-
-Decoded 180574 instructions
-Functions: 1966 total
-  runtime:  1498 (skipped)
-  stdlib:   204 (skipped)
-  user:     2          ← only user code matters
-
-User functions:
-  main.fmtExercise    @ 0x4a11c0 (blocks: 10)
-  main.main           @ 0x4a12e0 (blocks: 5)
-```
-
-```
-$ ./godecompose decompile myprogram
-
-// main.fmtExercise:
-s:=fmt.Sprintf(fmt,args...);    ← recovered from CALL fmt.Sprintf(SB)
-fmt.Println(as);                 ← recovered from CALL fmt.Fprintln(SB)
-fmt.Printf(fmt,args...);        ← recovered from CALL fmt.Fprintf(SB)
-err:=fmt.Errorf(fmt,args...);   ← recovered from CALL fmt.Errorf(SB)
-```
-
-```
-$ ./godecompose decompile myprogram --output=./recovered/
-
-./recovered/
-├── go.mod
-├── main.go              ← package main with reconstructed func main()
-└── myprogram/utils/
-    └── helpers.go       ← package utils with recovered Greet(), Add()
 ```
 
 ## How It Works
@@ -82,7 +119,7 @@ Only user code is decompiled. Runtime and stdlib are skipped.
 
 ### 4. Match patterns
 
-The pattern database (322 patterns across all Go stdlib packages) describes known compiler output sequences:
+The pattern database (350+ patterns across all Go stdlib packages) describes known compiler output sequences:
 
 ```rust
 // patterns/libs/golang/highlevel/highlevel.hexpat
