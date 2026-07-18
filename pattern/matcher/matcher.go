@@ -1,0 +1,376 @@
+// Package matcher matches compiled decompilation patterns against
+// disassembled instruction streams, producing variable bindings for
+// capture variables.
+package matcher
+
+import (
+	"sort"
+	"strings"
+
+	"github.com/cookiengineer/godecompose/disasm"
+	"github.com/cookiengineer/godecompose/pattern/lang/evaluator"
+)
+
+// Match represents a successful pattern match against a sequence of instructions.
+type Match struct {
+	Pattern    *evaluator.CompiledPattern
+	Alternative int
+	StartAddr  uint64
+	EndAddr    uint64
+	Bindings   map[string]Binding
+	Confidence float64
+}
+
+// Binding captures a variable name and its matched value.
+type Binding struct {
+	CaptureVar string
+	Value      string
+	Alias      string
+}
+
+// Matcher indexes compiled patterns by opcode and runs the matching algorithm.
+type Matcher struct {
+	patterns  []*evaluator.CompiledPattern
+	byOpcode  map[string][]*evaluator.CompiledPattern
+}
+
+// New creates a matcher with the given compiled patterns.
+func New(patterns []*evaluator.CompiledPattern) *Matcher {
+	m := &Matcher{
+		patterns: patterns,
+		byOpcode: make(map[string][]*evaluator.CompiledPattern),
+	}
+	for _, p := range patterns {
+		for _, alt := range p.Alternatives {
+			if len(alt) == 0 {
+				continue
+			}
+			firstOp := strings.ToUpper(alt[0].Opcode)
+			m.byOpcode[firstOp] = append(m.byOpcode[firstOp], p)
+		}
+	}
+	return m
+}
+
+// Match scans the instruction stream for pattern matches and returns the
+// best matches with minimal overlap. Limits to 10000 raw matches.
+func (m *Matcher) Match(instructions []disasm.Instruction) []Match {
+	const maxRawMatches = 50000
+	var allMatches []Match
+
+	for i, inst := range instructions {
+		if len(inst.Opcode) == 0 {
+			continue
+		}
+		opcode := strings.ToUpper(inst.Opcode)
+		candidates := m.byOpcode[opcode]
+		if len(candidates) == 0 {
+			continue
+		}
+
+		for _, pat := range candidates {
+			for altIdx, alt := range pat.Alternatives {
+				if len(alt) == 0 {
+					continue
+				}
+				if strings.ToUpper(alt[0].Opcode) != opcode {
+					continue
+				}
+
+				bindings, endIdx, confidence := m.tryMatch(instructions, i, alt)
+				if bindings != nil {
+					endAddr := instructions[endIdx].Address + uint64(instructions[endIdx].Size)
+					match := Match{
+						Pattern:     pat,
+						Alternative: altIdx,
+						StartAddr:   inst.Address,
+						EndAddr:     endAddr,
+						Bindings:    bindings,
+						Confidence:  confidence,
+					}
+					allMatches = append(allMatches, match)
+
+					if len(allMatches) >= maxRawMatches {
+						return resolveConflicts(allMatches)
+					}
+				}
+			}
+		}
+	}
+
+	return resolveConflicts(allMatches)
+}
+
+func (m *Matcher) tryMatch(instructions []disasm.Instruction, startIdx int, alt []evaluator.CompiledInstruction) (map[string]Binding, int, float64) {
+	bindings := make(map[string]Binding)
+	matchCount := 0
+	wildcardCount := 0
+	operandCount := 0
+
+	si := startIdx
+	pi := 0
+
+	for si < len(instructions) && pi < len(alt) {
+		patternInst := alt[pi]
+		streamInst := instructions[si]
+
+		if patternInst.IsLabel {
+			pi++
+			continue
+		}
+
+		matched := instructionMatches(streamInst, patternInst)
+		if !matched {
+			return nil, 0, 0
+		}
+
+		if !matchOperands(streamInst, patternInst.Operands, bindings) {
+			return nil, 0, 0
+		}
+
+		for _, op := range patternInst.Operands {
+			operandCount++
+			if op.IsWildcard {
+				wildcardCount++
+			}
+		}
+
+		matchCount++
+		si++
+		pi++
+	}
+
+	if pi < len(alt) {
+		return nil, 0, 0
+	}
+
+	confidence := 1.0
+	if operandCount > 0 {
+		confidence = 1.0 - float64(wildcardCount)/float64(operandCount)
+	}
+	confidence += float64(matchCount) * 0.1
+	if confidence > 1.0 {
+		confidence = 1.0
+	}
+
+	di := si - 1
+	if di < 0 {
+		di = 0
+	}
+
+	return bindings, di, confidence
+}
+
+func instructionMatches(inst disasm.Instruction, pat evaluator.CompiledInstruction) bool {
+	patOp := strings.ToUpper(pat.Opcode)
+	instOp := strings.ToUpper(inst.Opcode)
+
+	if patOp == "CALL" && instOp == "CALL" {
+		if len(pat.Operands) > 0 && pat.Operands[0].CaptureVar != "" {
+			target := pat.Operands[0].CaptureVar
+			target = strings.ReplaceAll(target, "_", ".")
+			if fuzzyMatchCall(inst.GoSyntax, target) || fuzzyMatchCall(inst.IntelSyntax, target) {
+				return true
+			}
+		}
+	}
+
+	if !strings.EqualFold(instOp, patOp) {
+		return false
+	}
+
+	return true
+}
+
+// fuzzyMatchCall checks if a CALL instruction's syntax matches a target
+// function pattern like "sync.Mutex.Lock" against "sync.(*Mutex).lockSlow(SB)".
+func fuzzyMatchCall(goSyntax, target string) bool {
+	if strings.Contains(goSyntax, target) {
+		return true
+	}
+	lower := strings.ToLower(goSyntax)
+	lowerTarget := strings.ToLower(target)
+
+	if strings.Contains(lower, lowerTarget) {
+		return true
+	}
+
+	norm := strings.NewReplacer(".", " ", "(", " ", ")", " ", "/", " ", "*", " ").Replace(lower)
+	normTarget := strings.NewReplacer(".", " ").Replace(lowerTarget)
+	normParts := strings.Fields(norm)
+	normTargetParts := strings.Fields(normTarget)
+
+	if len(normTargetParts) == 0 {
+		return false
+	}
+
+	for _, tp := range normTargetParts {
+		found := false
+		for _, p := range normParts {
+			if strings.HasPrefix(p, tp) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func matchOperands(inst disasm.Instruction, patternOps []evaluator.CompiledOperand, bindings map[string]Binding) bool {
+	if len(patternOps) == 0 {
+		return true
+	}
+
+	intel := inst.IntelSyntax
+	parts := operandParts(intel)
+
+	pi := 0
+	for _, part := range parts {
+		if pi >= len(patternOps) {
+			break
+		}
+		pat := patternOps[pi]
+
+		if pat.IsWildcard {
+			pi++
+			continue
+		}
+
+		matched := matchSingleOperand(part, pat, bindings)
+		if matched {
+			pi++
+		}
+	}
+
+	return pi >= len(patternOps)
+}
+
+func matchSingleOperand(opStr string, pat evaluator.CompiledOperand, bindings map[string]Binding) bool {
+	opStr = strings.TrimSpace(opStr)
+
+	if pat.IsImmediate && strings.HasPrefix(opStr, "0x") || strings.HasPrefix(opStr, "$") {
+		if pat.CaptureVar != "" {
+			bindings[pat.CaptureVar] = Binding{
+				CaptureVar: pat.CaptureVar,
+				Value:      opStr,
+			}
+		}
+		return true
+	}
+
+	if pat.IsImmediate {
+		if pat.CaptureVar != "" {
+			bindings[pat.CaptureVar] = Binding{
+				CaptureVar: pat.CaptureVar,
+				Value:      opStr,
+			}
+		}
+		return true
+	}
+
+	if pat.Register != "" && strings.EqualFold(opStr, pat.Register) {
+		return true
+	}
+
+	if pat.CaptureVar != "" && !pat.IsWildcard {
+		if existing, ok := bindings[pat.CaptureVar]; ok {
+			return strings.EqualFold(opStr, existing.Value)
+		}
+		bindings[pat.CaptureVar] = Binding{
+			CaptureVar: pat.CaptureVar,
+			Value:      opStr,
+		}
+		return true
+	}
+
+	return false
+}
+
+func operandParts(intelSyntax string) []string {
+	var parts []string
+	var current strings.Builder
+	inParen := 0
+
+	for _, ch := range intelSyntax {
+		switch ch {
+		case '(':
+			inParen++
+			if current.Len() > 0 {
+				parts = append(parts, strings.TrimSpace(current.String()))
+				current.Reset()
+			}
+			current.WriteRune(ch)
+		case ')':
+			inParen--
+			current.WriteRune(ch)
+			if inParen == 0 {
+				parts = append(parts, strings.TrimSpace(current.String()))
+				current.Reset()
+			}
+		case ',':
+			if inParen > 0 {
+				current.WriteRune(ch)
+			} else {
+				if current.Len() > 0 {
+					parts = append(parts, strings.TrimSpace(current.String()))
+					current.Reset()
+				}
+			}
+		case ' ':
+			if inParen > 0 {
+				current.WriteRune(ch)
+			} else if current.Len() > 0 {
+				parts = append(parts, strings.TrimSpace(current.String()))
+				current.Reset()
+			}
+		default:
+			current.WriteRune(ch)
+		}
+	}
+
+	if current.Len() > 0 {
+		parts = append(parts, strings.TrimSpace(current.String()))
+	}
+
+	return parts
+}
+
+func resolveConflicts(matches []Match) []Match {
+	if len(matches) <= 1 {
+		return matches
+	}
+
+	sorted := make([]Match, len(matches))
+	copy(sorted, matches)
+
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Confidence > sorted[j].Confidence
+	})
+
+	var result []Match
+	covered := make(map[uint64]bool)
+
+	for _, m := range sorted {
+		overlap := false
+		end := m.EndAddr
+		if end > m.StartAddr+10000 {
+			end = m.StartAddr + 10000
+		}
+		for addr := m.StartAddr; addr < end && !overlap; addr++ {
+			if covered[addr] {
+				overlap = true
+			}
+		}
+		if !overlap {
+			result = append(result, m)
+			for addr := m.StartAddr; addr < end; addr++ {
+				covered[addr] = true
+			}
+		}
+	}
+
+	return result
+}
