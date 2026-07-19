@@ -1,6 +1,6 @@
 # Roadmap
 
-Phase 10 completed. 668 patterns (stdlib + runtime + fallback + controlflow), 4 syscall tables, full decompilation pipeline with project generation. Every stdlib package has end-to-end tests.
+Phase 10 in progress — ~40% call-site recovery on real-world binary (ysco). 694 patterns, 4 E2E test suites (controlflow, dataops, structfields, switchcase). Major infrastructure fixed (Plan 9 opcodes, fuzzy matcher, gen blocks, O(n²) perf, memory operand matching). See `docs/phase10-user-code-reconstruction.md` for full status and remaining work.
 
 ## Phase 1: Foundation — Binary Format Parsers ✓
 [...]
@@ -249,11 +249,11 @@ Phase 10 completed. 668 patterns (stdlib + runtime + fallback + controlflow), 4 
 
 ---
 
-## Phase 10: User-Code Control Flow & Data Type Reconstruction ✓
+## Phase 10: User-Code Control Flow & Data Type Reconstruction [In Progress]
 
-**Completed.** Added control flow recognition (if/else, nil checks, CMP-based comparisons), Go idiom patterns, data type creation patterns, and comprehensive stdlib/runtime call coverage. Improved decompilation match rate from 7 to 2,209 (316x) on the ysco benchmark.
+**Status: In Progress** (~40% call-site recovery on ysco). Core infrastructure phase complete. Full reconstruction requires data flow analysis, control flow structuring, type inference, and deoptimization.
 
-### Completed Tasks
+### Completed Infrastructure
 
 - [x] Fix GenConditional evaluator bug (only first statement of conditional branches was processed)
 - [x] Implement GenLoop evaluation (was silently dropped)
@@ -266,7 +266,9 @@ Phase 10 completed. 668 patterns (stdlib + runtime + fallback + controlflow), 4 
 - [x] Conflict resolution: optimized from O(n×10000) to O(n×m) interval overlap check
 - [x] Performance: 3 O(n²) bottlenecks fixed (instruction collection, function block extraction, conflict resolution)
 - [x] Load all 4 pattern modules: stdlib, runtime, fallback, controlflow
-- [x] 93 new patterns in 6 files: control flow, Go idioms, data types, runtime extras, stdlib calls
+- [x] 118 new patterns in 8 files: control flow, Go idioms, data types, memory ops, stdlib calls, runtime extras
+- [x] E2E tests: controlflow (50 matches), dataops (35 matches)
+- [x] Design decisions documented: generic MOV/LEA skipped (produces noise), for loop patterns skipped (too variable)
 
 ### Realized API
 
@@ -282,7 +284,48 @@ Phase 10 completed. 668 patterns (stdlib + runtime + fallback + controlflow), 4 
 
 | Metric | Before | After |
 |--------|--------|-------|
-| Patterns | 550 | 668 |
+| Patterns | 550 | 694 |
 | Matches | 7 | 2,209 |
-| Unresolved stdlib/runtime CALLs | 769 | 0 |
+| Unresolved asm lines | 5,700 | 20,682 |
+| User call sites identified | 0% | ~40% |
 | Decompilation time | ∞ (timeout) | ~30s |
+
+### Remaining Phase 10 Tasks
+
+See `docs/phase10-user-code-reconstruction.md` for full details.
+
+**Category A — Pattern Matching Bugs:**
+| Task | Description |
+|------|-------------|
+| A1 | CALL pattern matching regression — 1,218 CALLs unresolved despite patterns |
+| A2 | CMP/TEST + Jcc operand matching — Intel syntax memory operands not matched |
+| A3 | Struct field false positives — stack accesses match same patterns as struct fields |
+| A4 | Gen block produces comments, not Go code — register names aren't Go variables |
+
+**Category B — New Patterns:**
+| Task | Description |
+|------|-------------|
+| B1 | For loop patterns (counted + range) |
+| B2 | Switch/case jump table patterns |
+| B3 | Defer/finally cleanup patterns |
+| B4 | Error return idiom patterns |
+| B5 | Type assertion patterns |
+| B6 | String switch hash-dispatch patterns |
+
+**Category C — Architectural:**
+| Task | Description |
+|------|-------------|
+| C1 | Variable tracking across instructions (data flow analysis) |
+| C2 | Type inference from runtime calls |
+| C3 | Function signature reconstruction from ABI |
+| C4 | Struct field naming from cross-method offset consensus |
+| C5 | Control flow structuring (nested blocks, not flat gotos) |
+| C6 | Block-level code generation (not per-instruction flattening) |
+| C7 | Deoptimization (outline inlined functions, reconstruct loops) |
+
+**Category D — Tooling:**
+| Task | Description |
+|------|-------------|
+| D1 | Pattern discovery tool (`godecompose patterns discover`) |
+| D2 | Match debugging tool (`godecompose patterns explain`) |
+| D3 | Recovery rate measurement automation |

@@ -240,6 +240,17 @@ func matchOperands(inst disasm.Instruction, patternOps []evaluator.CompiledOpera
 			continue
 		}
 
+		if isTypeQualifier(part) {
+			continue
+		}
+
+		if pat.BaseReg != "" && isMemoryRef(part) {
+			if bindMemoryOperand(part, pat, bindings) {
+				pi++
+			}
+			continue
+		}
+
 		matched := matchSingleOperand(part, pat, bindings)
 		if matched {
 			pi++
@@ -247,6 +258,18 @@ func matchOperands(inst disasm.Instruction, patternOps []evaluator.CompiledOpera
 	}
 
 	return pi >= len(patternOps)
+}
+
+func isTypeQualifier(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "qword", "dword", "word", "byte", "ptr":
+		return true
+	}
+	return false
+}
+
+func isMemoryRef(s string) bool {
+	return strings.Contains(s, "[") && strings.Contains(s, "]")
 }
 
 func matchSingleOperand(opStr string, pat evaluator.CompiledOperand, bindings map[string]Binding) bool {
@@ -337,6 +360,90 @@ func operandParts(intelSyntax string) []string {
 	}
 
 	return parts
+}
+
+func parseMemOp(opStr string) (base string, offset string) {
+	bStart := strings.Index(opStr, "[")
+	bEnd := strings.Index(opStr, "]")
+	if bStart < 0 || bEnd < 0 || bEnd <= bStart {
+		return "", ""
+	}
+	inner := opStr[bStart+1 : bEnd]
+
+	plusIdx := strings.Index(inner, "+")
+	minusIdx := strings.Index(inner, "-")
+	if minusIdx >= 0 {
+		plusIdx = minusIdx
+	}
+	if plusIdx < 0 {
+		if strings.Contains(inner, "*") {
+			parts := strings.Split(inner, "+")
+			if len(parts) >= 2 {
+				base = strings.TrimSpace(parts[len(parts)-1])
+				offset = "0"
+				return base, offset
+			}
+		}
+		base = strings.TrimSpace(inner)
+		offset = "0"
+		return base, offset
+	}
+
+	basePart := strings.TrimSpace(inner[:plusIdx])
+	offsetPart := strings.TrimSpace(inner[plusIdx+1:])
+
+	if strings.Contains(basePart, "*") {
+		base = strings.TrimSpace(inner[plusIdx+1:])
+		offset = "0"
+		return base, offset
+	}
+
+	base = basePart
+	if minusIdx >= 0 {
+		offset = "-" + offsetPart
+	} else {
+		offset = offsetPart
+	}
+	return base, offset
+}
+
+func bindMemoryOperand(opStr string, pat evaluator.CompiledOperand, bindings map[string]Binding) bool {
+	base, offset := parseMemOp(opStr)
+	if base == "" {
+		return false
+	}
+	if pat.BaseReg != "" {
+		if isKnownReg(pat.BaseReg) {
+			if !strings.EqualFold(base, pat.BaseReg) {
+				return false
+			}
+		} else {
+			bindings[pat.BaseReg] = Binding{
+				CaptureVar: pat.BaseReg,
+				Value:      base,
+			}
+		}
+	}
+	if pat.Offset != "" && offset != "" {
+		bindings[pat.Offset] = Binding{
+			CaptureVar: pat.Offset,
+			Value:      offset,
+		}
+	}
+	return true
+}
+
+func isKnownReg(name string) bool {
+	n := strings.ToUpper(name)
+	switch n {
+	case "AX", "BX", "CX", "DX", "SI", "DI", "BP", "SP",
+		"R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15",
+		"AL", "BL", "CL", "DL", "AH", "BH", "CH", "DH",
+		"X0", "X1", "X2", "X3", "X4", "X5", "X6", "X7",
+		"X8", "X9", "X10", "X11", "X12", "X13", "X14", "X15":
+		return true
+	}
+	return false
 }
 
 func resolveConflicts(matches []Match) []Match {

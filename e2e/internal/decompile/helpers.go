@@ -96,6 +96,9 @@ func loadTestDb(t *testing.T) *database.Database {
 	if err := golang.LoadFallback(db); err != nil {
 		t.Logf("loading fallback patterns: %v", err)
 	}
+	if err := golang.LoadControlFlow(db); err != nil {
+		t.Logf("loading controlflow patterns: %v", err)
+	}
 	if err := db.LoadSyscallsFromFS(syscall.TablesFS); err != nil {
 		t.Logf("loading syscall tables: %v", err)
 	}
