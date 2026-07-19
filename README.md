@@ -36,41 +36,54 @@ func main() {
 $ GOOS=linux GOARCH=amd64 go build -o app .
 ```
 
-### Decompile it
+### Disassemble it
 
 ```bash
-$ godecompose disasm app
+$ godecompose disassemble app
 
 Decoded 180725 instructions
 Functions: 1966 total
   runtime:  1414 (skipped)
   stdlib:   219 (skipped)
   user:     2          ← only your code matters
+  other:    331
 
 User functions:
   main.greet @ 0x4a11a0 (blocks: 8)
   main.main  @ 0x4a1220 (blocks: 9)
 ```
 
+### Decompile it
+
 ```bash
-$ godecompose decompile app
+$ godecompose decompile myapp ./app
 
-// main.greet:
-s := fmt.Sprintf($format, $args...);   ← recovered from CALL fmt.Sprintf(SB)
-strings.ToUpper($s);                   ← recovered from CALL strings.ToUpper(SB)
+[1/5] disassembling...
+[2/5] recovering functions...
+[3/5] filtering user instructions (2 functions)...
+[4/5] pattern matching (523 instructions, 362 patterns)...
 
-// main.main:
-fmt.Println($args...);                 ← recovered from CALL fmt.Fprintln(SB)
+=== Decompilation Summary ===
+Go module:  myapp
+Patterns:   362 loaded, 14 matches
+Packages:   1
+  main (2 functions)
+
+=== Recovery Metrics ===
+Instructions:   423 matched / 523 total (80.9%)
+Functions:      2 with signatures / 2 total
+Structs:        0 with fields / 0 total
+Call sites:     12 identified / 18 total (66.7%)
+
+Project written to: myapp/
 ```
 
-Each recovered line maps directly to a pattern in the database. The `$format`, `$args`, and `$s` are captured register variables from the pattern's `bind` block — in a full project generation pass (`--output`), these get resolved to concrete variable names.
+Each recovered line maps directly to a pattern in the database. The generated source code is written to the output directory, with function bodies reconstructed from matched patterns.
 
-### Generate a project
+### Project output
 
 ```bash
-$ godecompose decompile app --output=./recovered/
-
-./recovered/
+myapp/
 ├── go.mod
 ├── main.go              ← package main with reconstructed main() and greet()
 ```
@@ -80,9 +93,7 @@ Since `greet` is lowercase (unexported), the callgraph analysis determines it mu
 For programs with multiple packages:
 
 ```bash
-$ godecompose decompile myapp --output=./recovered/
-
-./recovered/
+myapp/
 ├── go.mod
 ├── main.go              ← package main
 ├── utils/
@@ -103,13 +114,19 @@ go build ./cmd/godecompose/
 ./godecompose info ./myprogram
 
 # Disassemble and show user functions (skipping runtime/stdlib)
-./godecompose disasm ./myprogram
-
-# Decompile to stdout
-./godecompose decompile ./myprogram
+./godecompose disassemble ./myprogram
 
 # Decompile to a Go project directory
-./godecompose decompile ./myprogram --output=./recovered/
+./godecompose decompile myproject ./myprogram
+
+# List available patterns
+./godecompose patterns list
+
+# Validate a pattern file
+./godecompose patterns validate path/to/file.hexpat
+
+# Discover patterns from a Go source file
+./godecompose patterns discover source.go
 ```
 
 ## How It Works
@@ -249,8 +266,9 @@ godecompose/
 
 1. Create a `.hexpat` file in the appropriate directory under `patterns/libs/golang/`
 2. Write patterns using the pattern language (see existing files for examples)
-3. Validate: `./godecompose patterns validate path/to/file.hexpat`
-4. Write an E2E test that compiles a Go program using the functions and verifies pattern matches
+3. Use `./godecompose patterns discover source.go` to auto-generate stub patterns from compiler output
+4. Validate: `./godecompose patterns validate path/to/file.hexpat`
+5. Write an E2E test that compiles a Go program using the functions and verifies pattern matches
 
 ### Adding syscall tables
 
