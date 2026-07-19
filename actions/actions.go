@@ -18,4 +18,19 @@ type DecompileOutput struct {
 	UserInstructions []disasm.Instruction
 	FuncResult       *function.RecoverResult
 	GoModule         string
+	Metrics          Metrics
+}
+
+// Metrics holds decompilation recovery rate statistics.
+type Metrics struct {
+	TotalInstructions    int
+	MatchedInstructions  int
+	RecoveryPct          float64
+	TotalUserFuncs       int
+	FuncsWithSignatures  int
+	TotalStructs         int
+	StructsWithFields    int
+	TotalCallSites       int
+	IdentifiedCallSites  int
+	CallSiteRecoveryPct  float64
 }

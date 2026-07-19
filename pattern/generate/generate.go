@@ -173,11 +173,26 @@ func (g *Generator) writePackage(dir string, pkgPath string, funcs []*function.F
 	})
 
 	// Output struct definitions first
-	if structs, ok := pkgStructs[pkgPath]; ok {
+	lookupPkg := pkgPath
+	if lookupPkg == "" {
+		lookupPkg = pkgName
+	}
+	if structs, ok := pkgStructs[lookupPkg]; ok {
 		for _, st := range structs {
 			if st.Name != "" {
 				buf.WriteString(fmt.Sprintf("type %s struct {\n", st.Name))
-				buf.WriteString("\t// fields unknown\n")
+				fields := function.InferStructFields(st)
+				if len(fields) > 0 {
+					for _, fld := range fields {
+						ft := fld.Type
+						if ft == "" {
+							ft = "interface{}"
+						}
+						buf.WriteString(fmt.Sprintf("\t%s %s // offset %s (%d refs)\n", fld.Name, ft, fld.Offset, fld.Count))
+					}
+				} else {
+					buf.WriteString("\t// fields unknown\n")
+				}
 				buf.WriteString("}\n\n")
 			}
 		}
@@ -193,16 +208,9 @@ func (g *Generator) writePackage(dir string, pkgPath string, funcs []*function.F
 			g.writeFunctionBody(&buf, f, insts, "\t")
 		} else if pkgName != "main" || f.ShortName != "main" {
 			buf.WriteString("\n")
-			if f.IsMethod && f.ReceiverType != "" {
-				receiverVar := strings.ToLower(f.ReceiverType[:1])
-				if f.IsPointerReceiver {
-					buf.WriteString(fmt.Sprintf("func (%s *%s) %s() {\n", receiverVar, f.ReceiverType, f.ShortName))
-				} else {
-					buf.WriteString(fmt.Sprintf("func (%s %s) %s() {\n", receiverVar, f.ReceiverType, f.ShortName))
-				}
-			} else {
-				buf.WriteString(fmt.Sprintf("func %s() {\n", f.ShortName))
-			}
+			f.Blocks = disasm.BuildControlFlowGraph(insts, []uint64{f.EntryPoint})
+			sig := function.ReconstructSignature(f)
+			buf.WriteString(sig.String() + " {\n")
 			g.writeFunctionBody(&buf, f, insts, "\t")
 		}
 	}
@@ -219,31 +227,125 @@ func (g *Generator) writeFunctionBody(buf *strings.Builder, f *function.Function
 		return
 	}
 
-	// Group matches by function
+	blocks := disasm.BuildControlFlowGraph(insts, []uint64{f.EntryPoint})
+	if len(blocks) == 0 {
+		return
+	}
+
 	var funcMatches []matcher.Match
 	for _, m := range g.matches {
 		if m.StartAddr >= f.EntryPoint && m.EndAddr <= f.EndAddr {
 			funcMatches = append(funcMatches, m)
 		}
 	}
-
 	sort.Slice(funcMatches, func(i, j int) bool {
 		return funcMatches[i].StartAddr < funcMatches[j].StartAddr
 	})
 
-	lastAddr := f.EntryPoint
-	for _, match := range funcMatches {
-		if match.StartAddr > lastAddr {
-			g.emitFunctionRange(buf, lastAddr, match.StartAddr, insts, indent)
+	addrToLabel := make(map[uint64]string)
+	labelNum := 0
+	for _, b := range blocks {
+		for _, inst := range b.Instructions {
+			if inst.IsBranch && inst.BranchTarget != 0 && !inst.IsCall {
+				if _, ok := addrToLabel[inst.BranchTarget]; !ok {
+					addrToLabel[inst.BranchTarget] = fmt.Sprintf("L%d", labelNum)
+					labelNum++
+				}
+			}
 		}
-		template := g.expandTemplate(match)
-		buf.WriteString(indent + strings.TrimSpace(template) + "\n")
-		lastAddr = match.EndAddr
 	}
 
-	endAddr := f.EndAddr
-	if lastAddr < endAddr {
-		g.emitFunctionRange(buf, lastAddr, endAddr, insts, indent)
+	blockIdx := -1
+	for _, block := range blocks {
+		blockIdx++
+		insts := block.Instructions
+		if len(insts) == 0 {
+			continue
+		}
+
+		if label, ok := addrToLabel[block.StartAddr]; ok {
+			buf.WriteString(fmt.Sprintf("\n%s%s:\n", indent, label))
+		}
+
+		var blockMatches []matcher.Match
+		for _, m := range funcMatches {
+			if m.StartAddr >= block.StartAddr && m.EndAddr <= block.EndAddr {
+				blockMatches = append(blockMatches, m)
+			}
+		}
+
+		lastInst := insts[len(insts)-1]
+		isCond := lastInst.IsConditional && len(block.Successors) > 1
+
+		if isCond {
+			condText := "_"
+			lastMatchIdx := -1
+			if len(blockMatches) > 0 {
+				lastIdx := len(blockMatches) - 1
+				lastMatch := blockMatches[lastIdx]
+				gen := strings.TrimSpace(g.expandTemplate(lastMatch))
+				if strings.HasPrefix(gen, "if ") {
+					if semi := strings.Index(gen, "{ goto"); semi >= 0 {
+						condText = strings.TrimSpace(gen[3:semi])
+						lastMatchIdx = lastIdx
+					} else if semi := strings.Index(gen, "{"); semi >= 0 {
+						condText = strings.TrimSpace(gen[3:semi])
+						lastMatchIdx = lastIdx
+					}
+				}
+			}
+			buf.WriteString(indent + "if " + condText + " {\n")
+			lastAddr := block.StartAddr
+			for i, match := range blockMatches {
+				if i == lastMatchIdx {
+					continue
+				}
+				if match.StartAddr > lastAddr {
+					g.emitFunctionRange(buf, lastAddr, match.StartAddr, insts, indent+"\t")
+				}
+				template := g.expandTemplate(match)
+				buf.WriteString(indent + "\t" + strings.TrimSpace(template) + "\n")
+				lastAddr = match.EndAddr
+			}
+			if lastAddr < block.EndAddr {
+				g.emitFunctionRange(buf, lastAddr, block.EndAddr, insts, indent+"\t")
+			}
+			buf.WriteString(indent + "}\n")
+			if len(block.Successors) > 1 {
+				elseTarget := block.Successors[1]
+				if el, ok := addrToLabel[elseTarget.StartAddr]; ok {
+					buf.WriteString(fmt.Sprintf("%s} else {\n", indent))
+					buf.WriteString(fmt.Sprintf("%s\tgoto %s\n", indent, el))
+					buf.WriteString(indent + "}\n")
+				}
+			}
+		} else {
+			var nonCondMatches []matcher.Match
+			for _, m := range blockMatches {
+				if m.StartAddr >= lastInst.Address && m.StartAddr <= lastInst.Address+uint64(lastInst.Size) {
+					continue
+				}
+				nonCondMatches = append(nonCondMatches, m)
+			}
+			lastAddr := block.StartAddr
+			for _, match := range nonCondMatches {
+				if match.StartAddr > lastAddr {
+					g.emitFunctionRange(buf, lastAddr, match.StartAddr, insts, indent+"\t")
+				}
+				template := g.expandTemplate(match)
+				buf.WriteString(indent + "\t" + strings.TrimSpace(template) + "\n")
+				lastAddr = match.EndAddr
+			}
+			if lastAddr < block.EndAddr {
+				g.emitFunctionRange(buf, lastAddr, block.EndAddr, insts, indent+"\t")
+			}
+		}
+
+		if lastInst.IsBranch && !lastInst.IsConditional && lastInst.BranchTarget != 0 {
+			if tl, ok := addrToLabel[lastInst.BranchTarget]; ok {
+				buf.WriteString(fmt.Sprintf("%sgoto %s\n", indent, tl))
+			}
+		}
 	}
 
 	if f.ShortName != "main" {
@@ -253,8 +355,12 @@ func (g *Generator) writeFunctionBody(buf *strings.Builder, f *function.Function
 
 func (g *Generator) emitFunctionRange(buf *strings.Builder, start, end uint64, insts []disasm.Instruction, indent string) {
 	count := 0
+	noiseOps := map[string]bool{"NOP": true, "NOPL": true, "NOPW": true, "INT": true, "INT3": true, "DATA16": true}
 	for _, inst := range insts {
 		if inst.Address >= start && inst.Address < end {
+			if noiseOps[inst.Opcode] {
+				continue
+			}
 			if count == 0 {
 				buf.WriteString(indent + "// unresolved\n")
 			}

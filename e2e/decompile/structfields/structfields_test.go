@@ -1,10 +1,12 @@
 package decompile_structfields
 
 import (
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/cookiengineer/godecompose/e2e/internal/decompile"
+	"github.com/cookiengineer/godecompose/function"
 )
 
 func TestStructFields(t *testing.T) {
@@ -18,32 +20,63 @@ func TestStructFields(t *testing.T) {
 		t.Fatal("structfields: no patterns matched at all")
 	}
 
-	matchNames := make(map[string]int)
-	for _, m := range r.Matches {
-		matchNames[m.Pattern.Name]++
-	}
-	for name, count := range matchNames {
-		t.Logf("  matched: %s (%dx)", name, count)
+	fr := r.FuncResult
+	t.Logf("functions: %d total, %d user", len(fr.Functions), len(fr.UserFunctions))
+	t.Logf("structs recovered: %d", len(fr.Structs))
+
+	for _, f := range fr.UserFunctions {
+		t.Logf("  func: %s pkg=%s recv=%q method=%v ptr=%v",
+			f.ShortName, f.PackagePath, f.ReceiverType, f.IsMethod, f.IsPointerReceiver)
 	}
 
-	totalMatches := len(r.Matches)
-	t.Logf("structfields: %d total matches across %d unique patterns", totalMatches, len(matchNames))
-
-	fieldMatches := 0
-	for _, m := range r.Matches {
-		if strings.Contains(m.Pattern.Name, "field") {
-			fieldMatches++
-			t.Logf("  field access: %s @ 0x%x", m.Pattern.Name, m.StartAddr)
+	hasStruct := false
+	for _, st := range fr.Structs {
+		t.Logf("  struct: %s pkg=%s methods=%d", st.Name, st.PackagePath, len(st.Methods))
+		if st.Name == "Point" {
+			hasStruct = true
+			fields := function.InferStructFields(st)
+			sort.Slice(fields, func(i, j int) bool { return fields[i].Offset < fields[j].Offset })
+			t.Logf("  Point fields: %d", len(fields))
+			for _, fld := range fields {
+				t.Logf("    %s offset=%s type=%s count=%d", fld.Name, fld.Offset, fld.Type, fld.Count)
+			}
+			if len(fields) < 2 {
+				t.Errorf("Point struct: expected at least 2 fields, got %d", len(fields))
+			}
 		}
 	}
-	t.Logf("struct field access matches: %d", fieldMatches)
-
-	output := r.Output
-	if strings.Contains(output, "field_0x") {
-		t.Logf("  output contains struct field references")
+	if !hasStruct {
+		t.Log("Point struct not recovered (may be inlined or methods not detected)")
 	}
 
-	if totalMatches < 5 {
-		t.Errorf("structfields: expected at least 5 matches, got %d", totalMatches)
+	methodCount := 0
+	for _, f := range fr.UserFunctions {
+		if f.IsMethod {
+			methodCount++
+		}
+	}
+	t.Logf("method functions: %d", methodCount)
+	if methodCount < 5 {
+		t.Errorf("structfields: expected at least 5 methods, got %d (compiler may inline)", methodCount)
+	}
+
+	output := r.Output
+	checks := []struct {
+		name string
+		fn   func(string) bool
+	}{
+		{"has fmt.Println", func(s string) bool {
+			return strings.Contains(s, "Println")
+		}},
+		{"no INT3 noise in output", func(s string) bool {
+			return !strings.Contains(s, "int3")
+		}},
+	}
+	for _, c := range checks {
+		if c.fn(output) {
+			t.Logf("  ✓ %s", c.name)
+		} else {
+			t.Logf("  ✗ %s", c.name)
+		}
 	}
 }

@@ -86,6 +86,8 @@ func DecompileBinary(b binary.Binary, db *database.Database) (*DecompileOutput, 
 	g := generate.New(matches, userInstructions)
 	generatedSource := g.Generate()
 
+	metrics := computeMetrics(result, userInstructions, matches)
+
 	return &DecompileOutput{
 		Matches:          matches,
 		GeneratedSource:  generatedSource,
@@ -93,6 +95,7 @@ func DecompileBinary(b binary.Binary, db *database.Database) (*DecompileOutput, 
 		UserInstructions: userInstructions,
 		FuncResult:       result,
 		GoModule:         goModule,
+		Metrics:          metrics,
 	}, nil
 }
 
@@ -129,4 +132,67 @@ func platformFromBinary(b binary.Binary) types.Platform {
 		return types.PlatformDarwin
 	}
 	return types.PlatformUnknown
+}
+
+func computeMetrics(result *function.RecoverResult, userInstructions []disasm.Instruction, matches []matcher.Match) Metrics {
+	m := Metrics{
+		TotalInstructions: len(userInstructions),
+		TotalUserFuncs:    len(result.UserFunctions),
+		TotalStructs:      len(result.Structs),
+	}
+
+	covered := make(map[uint64]bool)
+	for _, match := range matches {
+		for addr := match.StartAddr; addr < match.EndAddr; addr++ {
+			covered[addr] = true
+		}
+	}
+	for _, inst := range userInstructions {
+		if covered[inst.Address] {
+			m.MatchedInstructions++
+		}
+	}
+	if m.TotalInstructions > 0 {
+		m.RecoveryPct = float64(m.MatchedInstructions) / float64(m.TotalInstructions) * 100
+	}
+
+	for _, f := range result.UserFunctions {
+		if f.Blocks != nil && len(f.Blocks) > 0 {
+			sig := function.ReconstructSignature(f)
+			if len(sig.Args) > 0 || len(sig.Returns) > 0 {
+				m.FuncsWithSignatures++
+			}
+		}
+	}
+
+	for _, st := range result.Structs {
+		fields := function.InferStructFields(st)
+		if len(fields) > 0 {
+			m.StructsWithFields++
+		}
+	}
+
+	callCount := 0
+	identifiedCalls := 0
+	callCovered := make(map[uint64]bool)
+	for _, match := range matches {
+		for _, inst := range userInstructions {
+			if inst.IsCall && match.StartAddr <= inst.Address && inst.Address < match.EndAddr {
+				callCovered[inst.Address] = true
+			}
+		}
+	}
+	for _, inst := range userInstructions {
+		if inst.IsCall {
+			callCount++
+		}
+	}
+	identifiedCalls = len(callCovered)
+	m.TotalCallSites = callCount
+	m.IdentifiedCallSites = identifiedCalls
+	if callCount > 0 {
+		m.CallSiteRecoveryPct = float64(identifiedCalls) / float64(callCount) * 100
+	}
+
+	return m
 }

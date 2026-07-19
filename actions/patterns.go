@@ -3,6 +3,9 @@ package actions
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/cookiengineer/godecompose/database"
@@ -90,6 +93,96 @@ func PatternsValidate(filePath string) error {
 			}
 		}
 	}
+
+	return nil
+}
+
+func PatternsDiscover(sourcePath string) error {
+	absPath, err := filepath.Abs(sourcePath)
+	if err != nil {
+		return fmt.Errorf("resolving path: %w", err)
+	}
+
+	dir := filepath.Dir(absPath)
+	file := filepath.Base(absPath)
+
+	tmpDir, err := os.MkdirTemp("", "godecompose-discover")
+	if err != nil {
+		return fmt.Errorf("creating temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cmd := exec.Command("go", "build", "-gcflags=-S", "-o", filepath.Join(tmpDir, "out"), file)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOARCH=amd64", "GOOS=linux")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("compiling: %w\n%s", err, out)
+	}
+
+	asm := string(out)
+	callRe := regexp.MustCompile(`\s+CALL\s+(\S+)`)
+	seen := make(map[string]bool)
+
+	var discovered []string
+	for _, line := range strings.Split(asm, "\n") {
+		matches := callRe.FindStringSubmatch(line)
+		if len(matches) < 2 {
+			continue
+		}
+		target := matches[1]
+		target = strings.TrimSuffix(target, "(SB)")
+		target = strings.TrimSuffix(target, "(SB")
+
+		if strings.Contains(target, "0x") || strings.Contains(target, "(") {
+			continue
+		}
+
+		if target == "runtime.morestack" || target == "runtime.morestack_noctxt" ||
+			strings.Contains(target, "gcWriteBarrier") || target == "runtime.duffzero" ||
+			target == "runtime.duffcopy" {
+			continue
+		}
+
+		patternName := strings.ReplaceAll(target, ".", "_")
+		patternName = strings.ReplaceAll(patternName, "/", "_")
+		patternName = strings.ReplaceAll(patternName, "(", "_")
+		patternName = strings.ReplaceAll(patternName, ")", "_")
+		patternName = strings.ReplaceAll(patternName, "*", "_")
+
+		if seen[patternName] {
+			continue
+		}
+		seen[patternName] = true
+
+		genName := strings.TrimPrefix(target, "runtime.")
+		genName = strings.TrimPrefix(genName, "main.")
+
+		pattern := fmt.Sprintf(`pattern go_%s {
+    name: "go: %s";
+    library: "go-discovered";
+    description: "Auto-discovered from %s";
+    instr match { CALL %s }
+    gen { %s(...) }
+}
+`, patternName, target, file, patternName, genName)
+
+		discovered = append(discovered, pattern)
+	}
+
+	if len(discovered) == 0 {
+		fmt.Println("No CALL instructions found in compiler output.")
+		return nil
+	}
+
+	fmt.Printf("// Auto-generated patterns from: %s\n", file)
+	fmt.Printf("// Found %d unique CALL targets\n\n", len(discovered))
+	fmt.Printf("arch x86_64;\n")
+	fmt.Printf("platform linux, darwin, windows, freebsd;\n\n")
+	for _, p := range discovered {
+		fmt.Println(p)
+	}
+	fmt.Fprintf(os.Stderr, "Discovered %d patterns\n", len(discovered))
 
 	return nil
 }

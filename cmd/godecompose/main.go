@@ -73,6 +73,19 @@ func main() {
 			fmt.Fprintf(os.Stderr, "  %s (%d functions)\n", pkg, len(output.FuncResult.Packages[pkg]))
 		}
 
+		m := output.Metrics
+		if m.TotalInstructions > 0 {
+			fmt.Fprintf(os.Stderr, "\n=== Recovery Metrics ===\n")
+			fmt.Fprintf(os.Stderr, "Instructions:   %d matched / %d total (%.1f%%)\n",
+				m.MatchedInstructions, m.TotalInstructions, m.RecoveryPct)
+			fmt.Fprintf(os.Stderr, "Functions:      %d with signatures / %d total\n",
+				m.FuncsWithSignatures, m.TotalUserFuncs)
+			fmt.Fprintf(os.Stderr, "Structs:        %d with fields / %d total\n",
+				m.StructsWithFields, m.TotalStructs)
+			fmt.Fprintf(os.Stderr, "Call sites:     %d identified / %d total (%.1f%%)\n",
+				m.IdentifiedCallSites, m.TotalCallSites, m.CallSiteRecoveryPct)
+		}
+
 		if err := actions.WriteProject(output, outputDir); err != nil {
 			fmt.Fprintf(os.Stderr, "write project: %v\n", err)
 			os.Exit(1)
@@ -81,7 +94,7 @@ func main() {
 
 	case "patterns":
 		if len(args) < 1 {
-			fmt.Println("usage: godecompose patterns <list|validate> [args]")
+			fmt.Println("usage: godecompose patterns <list|validate|discover> [args]")
 			os.Exit(1)
 		}
 		switch args[0] {
@@ -94,6 +107,15 @@ func main() {
 				os.Exit(1)
 			}
 			if err := actions.PatternsValidate(args[1]); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+		case "discover":
+			if len(args) < 2 {
+				fmt.Println("usage: godecompose patterns discover <source.go>")
+				os.Exit(1)
+			}
+			if err := actions.PatternsDiscover(args[1]); err != nil {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 				os.Exit(1)
 			}
