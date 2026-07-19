@@ -5,6 +5,7 @@ import (
 	"debug/pe"
 	encodingbinary "encoding/binary"
 	"fmt"
+	"strings"
 
 	"github.com/cookiengineer/godecompose/binary"
 	"github.com/cookiengineer/godecompose/types"
@@ -278,8 +279,17 @@ func decodeGoBuildInfoV1(data []byte) *binary.GoBuildInfo {
 		return result, true
 	}
 
-	info.Path, _ = readString()
+	// V1 format: Version, Path, Main, then deps and settings
 	info.Version, _ = readString()
+	modData, _ := readString()
+
+	if strings.HasPrefix(modData, "0w") && len(modData) > 16 {
+		parseGoBuildInfoText(modData[16:], info)
+		return info
+	}
+
+	// Old V1 format: second string is Path, third is Main
+	info.Path = modData
 	info.Main, _ = readString()
 
 	numDeps, ok := readUVarint()
@@ -306,4 +316,41 @@ func decodeGoBuildInfoV1(data []byte) *binary.GoBuildInfo {
 	}
 
 	return info
+}
+
+func parseGoBuildInfoText(data string, info *binary.GoBuildInfo) {
+	lines := strings.Split(data, "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) == 0 {
+			continue
+		}
+		switch parts[0] {
+		case "path":
+			if len(parts) > 1 && info.Path == "" {
+				info.Path = parts[1]
+			}
+		case "mod":
+			if len(parts) >= 3 {
+				dep := binary.GoModuleDep{
+					Path:    parts[1],
+					Version: parts[2],
+				}
+				if len(parts) > 3 && parts[3] != "" {
+					dep.Sum = parts[3]
+				}
+				info.Deps = append(info.Deps, dep)
+			}
+		case "build":
+			if len(parts) > 1 {
+				kv := strings.SplitN(parts[1], "=", 2)
+				if len(kv) == 2 {
+					info.Settings[kv[0]] = kv[1]
+				}
+			}
+		}
+	}
 }
