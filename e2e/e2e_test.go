@@ -8,9 +8,9 @@ import (
 	"github.com/cookiengineer/godecompose/disasm"
 	"github.com/cookiengineer/godecompose/function"
 	"github.com/cookiengineer/godecompose/goutil"
-	_ "github.com/cookiengineer/godecompose/elf"
-	_ "github.com/cookiengineer/godecompose/macho"
-	_ "github.com/cookiengineer/godecompose/pe"
+	_ "github.com/cookiengineer/godecompose/binary/elf"
+	_ "github.com/cookiengineer/godecompose/binary/macho"
+	_ "github.com/cookiengineer/godecompose/binary/pe"
 )
 
 func TestEndToEndSimpleELF(t *testing.T) {

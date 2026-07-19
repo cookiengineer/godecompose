@@ -8,17 +8,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cookiengineer/godecompose/actions"
 	"github.com/cookiengineer/godecompose/binary"
 	"github.com/cookiengineer/godecompose/database"
 	"github.com/cookiengineer/godecompose/disasm"
 	"github.com/cookiengineer/godecompose/function"
-	"github.com/cookiengineer/godecompose/pattern/generate"
 	"github.com/cookiengineer/godecompose/pattern/matcher"
-	"github.com/cookiengineer/godecompose/types"
 
-	_ "github.com/cookiengineer/godecompose/elf"
-	_ "github.com/cookiengineer/godecompose/macho"
-	_ "github.com/cookiengineer/godecompose/pe"
+	_ "github.com/cookiengineer/godecompose/binary/elf"
+	_ "github.com/cookiengineer/godecompose/binary/macho"
+	_ "github.com/cookiengineer/godecompose/binary/pe"
 )
 
 // CompileAndOpen compiles a testdata/src/<name> Go program for linux/amd64 and opens the binary.
@@ -58,45 +57,32 @@ type Result struct {
 func Decompile(t *testing.T, b binary.Binary) Result {
 	t.Helper()
 
-	textSection, ok := b.Section(".text")
-	if !ok {
-		t.Fatal("no .text section")
-	}
-
-	symLookup := buildSymLookup(b)
-	instructions, err := disasm.DecodeStreamWithSymbols(textSection.Data, textSection.Address, symLookup)
+	db := loadTestDb(t)
+	output, err := actions.DecompileBinary(b, db)
 	if err != nil {
-		t.Fatalf("DecodeStream: %v", err)
+		t.Fatalf("DecompileBinary: %v", err)
 	}
 
-	result, err := function.RecoverFromBinary(b, instructions)
-	if err != nil {
-		t.Logf("function recovery: %v", err)
+	t.Logf("functions: %d total (user: %d)",
+		len(output.FuncResult.Functions), len(output.FuncResult.UserFunctions))
+	t.Logf("user instructions: %d / %d total", len(output.UserInstructions), len(output.Instructions))
+	t.Logf("found %d matches", len(output.Matches))
+
+	t.Logf("Go module: %s", output.GoModule)
+	for pkg, funcs := range output.FuncResult.Packages {
+		t.Logf("  package %s: %d functions", pkg, len(funcs))
 	}
 
-	runtimeCount := 0
-	stdlibCount := 0
-	for _, f := range result.Functions {
-		switch f.Classification {
-		case function.ClassRuntime:
-			runtimeCount++
-		case function.ClassStdlib:
-			stdlibCount++
-		}
+	return Result{
+		Matches:      output.Matches,
+		Output:       output.GeneratedSource,
+		Instructions: output.UserInstructions,
+		FuncResult:   output.FuncResult,
 	}
-	t.Logf("functions: %d total (runtime: %d, stdlib: %d, user: %d)",
-		len(result.Functions), runtimeCount, stdlibCount, len(result.UserFunctions))
+}
 
-	var userInstructions []disasm.Instruction
-	for _, f := range result.UserFunctions {
-		for _, inst := range instructions {
-			if inst.Address >= f.EntryPoint && inst.Address < f.EndAddr {
-				userInstructions = append(userInstructions, inst)
-			}
-		}
-	}
-	t.Logf("user instructions: %d / %d total", len(userInstructions), len(instructions))
-
+func loadTestDb(t *testing.T) *database.Database {
+	t.Helper()
 	_, thisFile, _, _ := runtime.Caller(0)
 	baseDir := filepath.Dir(thisFile)
 	patternsDir := filepath.Join(baseDir, "..", "..", "..", "patterns")
@@ -106,23 +92,7 @@ func Decompile(t *testing.T, b binary.Binary) Result {
 	if err := db.LoadPatternsFromDir(filepath.Join(patternsDir, "libs")); err != nil {
 		t.Logf("loading patterns: %v", err)
 	}
-
-	patterns := db.FindPatterns(b.Architecture(), platformGuess(b))
-	t.Logf("loaded %d patterns for matching", len(patterns))
-
-	m := matcher.New(patterns)
-	matches := m.Match(userInstructions)
-	t.Logf("found %d matches", len(matches))
-
-	g := generate.New(matches, userInstructions)
-	output := g.Generate()
-
-	return Result{
-		Matches:      matches,
-		Output:       output,
-		Instructions: userInstructions,
-		FuncResult:   result,
-	}
+	return db
 }
 
 // AssertPipelineOk checks that the decompile pipeline produced non-empty results.
@@ -166,34 +136,4 @@ func FilterMatchesByPackage(matches []matcher.Match, pkgPrefix string) []matcher
 		}
 	}
 	return out
-}
-
-func buildSymLookup(b binary.Binary) disasm.SymLookup {
-	syms, err := b.Symbols()
-	if err != nil {
-		return nil
-	}
-	entries := make([]disasm.SymbolEntry, 0, len(syms))
-	for _, s := range syms {
-		if s.Name != "" && s.Size > 0 {
-			entries = append(entries, disasm.SymbolEntry{
-				Name:    s.Name,
-				Address: s.Address,
-				Size:    s.Size,
-			})
-		}
-	}
-	return disasm.BuildSymLookup(entries)
-}
-
-func platformGuess(b binary.Binary) types.Platform {
-	switch b.Format() {
-	case binary.FormatELF:
-		return types.PlatformLinux
-	case binary.FormatPE:
-		return types.PlatformWindows
-	case binary.FormatMachO:
-		return types.PlatformDarwin
-	}
-	return types.PlatformUnknown
 }

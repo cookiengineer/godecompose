@@ -72,9 +72,23 @@ $ godecompose decompile app --output=./recovered/
 
 ./recovered/
 ├── go.mod
-├── main.go              ← package main with reconstructed main()
-└── app/
-    └── greet.go         ← recovered greet()
+├── main.go              ← package main with reconstructed main() and greet()
+```
+
+Since `greet` is lowercase (unexported), the callgraph analysis determines it must belong to the `main` package — the only package where it can be called. Struct types and their methods are similarly placed in the correct package based on method callers.
+
+For programs with multiple packages:
+
+```bash
+$ godecompose decompile myapp --output=./recovered/
+
+./recovered/
+├── go.mod
+├── main.go              ← package main
+├── utils/
+│   └── utils.go         ← recovered utils package with struct definitions
+└── models/
+    └── models.go        ← recovered models package with struct definitions
 ```
 
 ## Quick Start
@@ -117,6 +131,8 @@ The pclntab provides exact function entry points. Symbol names are classified:
 
 Only user code is decompiled. Runtime and stdlib are skipped.
 
+Method receivers (e.g. `(*IntHeap).Push` or `User.Method`) are parsed from symbol names. **Callgraph analysis** then refines package placement: lowercase (unexported) functions are reassigned to their caller's package using Go visibility rules, and struct types are placed based on the consensus of their methods' packages.
+
 ### 4. Match patterns
 
 The pattern database (350+ patterns across all Go stdlib packages) describes known compiler output sequences:
@@ -146,7 +162,7 @@ Matched patterns expand their `gen` templates with captured variable bindings. U
 
 ### 6. Write project (optional)
 
-Functions are grouped by their Go package path (extracted from symbol names like `myprogram/utils.Greet`). A `main.go` is generated for the entry point, and sub-package directories are created for each recovered package.
+Functions are grouped by their Go package path (extracted from symbol names like `myprogram/utils.Greet`). A `main.go` is generated for the entry point, and sub-package directories are created for each recovered package. Recovered struct types emit stub definitions with method receiver syntax (`func (r *Type) Method() { ... }`).
 
 ## Requirements
 
@@ -203,14 +219,15 @@ pattern my_pattern {
 ```
 godecompose/
 ├── cmd/godecompose/          # CLI tool
+├── actions/                  # Reusable decompilation pipeline steps
 ├── types/                    # Arch, Platform enums
 ├── binary/                   # Binary format interface + Open() dispatcher
-├── elf/                      # ELF parser
-├── pe/                       # PE/COFF parser
-├── macho/                    # Mach-O parser
+│   ├── elf/                  # ELF parser
+│   ├── pe/                   # PE/COFF parser
+│   └── macho/                # Mach-O parser
 ├── disasm/                   # x86_64 disassembler + CFG builder
 │   └── goasm/                # Go Plan 9 assembly dialect support
-├── function/                 # Function recovery (pclntab + classification)
+├── function/                 # Function recovery (pclntab, classification, callgraph, structs)
 ├── pattern/
 │   ├── lang/                 # Pattern language engine (lexer/parser/AST/evaluator)
 │   ├── matcher/              # Instruction pattern matcher

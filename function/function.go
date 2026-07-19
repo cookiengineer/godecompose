@@ -50,60 +50,149 @@ func (c Classification) String() string {
 
 // Function represents a recovered function with its basic blocks and metadata.
 type Function struct {
-	Name           string
-	EntryPoint     uint64
-	EndAddr        uint64
-	FrameSize      int
-	ArgSize        int
-	Blocks         []*disasm.BasicBlock
-	Args           []Variable
-	Returns        []Variable
-	Locals         []Variable
-	IsGoFunc       bool
-	SourceFile     string
-	SourceLine     int
-	Classification Classification
-	PackagePath    string
-	ShortName      string
+	Name             string
+	EntryPoint       uint64
+	EndAddr          uint64
+	FrameSize        int
+	ArgSize          int
+	Blocks           []*disasm.BasicBlock
+	Args             []Variable
+	Returns          []Variable
+	Locals           []Variable
+	IsGoFunc         bool
+	SourceFile       string
+	SourceLine       int
+	Classification   Classification
+	PackagePath      string
+	ShortName        string
+	ReceiverType     string
+	IsMethod         bool
+	IsPointerReceiver bool
 }
 
-// ParsePackageName extracts the package path and short function name from
-// a Go symbol name like "main.main" or "testproject/utils.Greet".
-// Returns (packagePath, shortName).
-func ParsePackageName(fullName string) (string, string) {
-	// Handle main package specially
-	if strings.HasPrefix(fullName, "main.") {
-		return "main", fullName[5:]
+// StructType represents a recovered struct type with its methods.
+type StructType struct {
+	Name        string
+	PackagePath string
+	Methods     []*Function
+}
+
+// ParsePackageName extracts the package path, function name, and optional
+// method receiver from a Go symbol name. Symbols can be:
+//
+//	main.main              -> pkg=main, func=main
+//	main.greet             -> pkg=main, func=greet
+//	main.Type.Method       -> pkg=main, receiver=Type, method=Method
+//	main.(*Type).Method    -> pkg=main, receiver=Type, pointer, method=Method
+//	main.(Type).Method     -> pkg=main, receiver=Type, method=Method
+//	example.com/pkg.Func   -> pkg=example.com/pkg, func=Func
+//	example.com/pkg.T.M    -> pkg=example.com/pkg, receiver=T, method=M
+func ParsePackageName(fullName string) (pkgPath string, shortName string, receiverType string, isPointerReceiver bool, isMethod bool) {
+	if fullName == "" {
+		return "", "", "", false, false
 	}
 
 	lastDot := strings.LastIndex(fullName, ".")
 	if lastDot < 0 {
-		return "", fullName
+		return "", fullName, "", false, false
 	}
 
-	pkgPath := fullName[:lastDot]
-	shortName := fullName[lastDot+1:]
+	pkgPath = fullName[:lastDot]
+	funcName := fullName[lastDot+1:]
 
-	// Clean up: remove .abi0 suffix, .func1 suffix, etc.
-	if strings.HasSuffix(shortName, ".abi0") {
-		shortName = shortName[:len(shortName)-5]
+	// Remove ABI suffixes like .abi0
+	if strings.HasSuffix(funcName, ".abi0") {
+		funcName = funcName[:len(funcName)-5]
 	}
 
-	return pkgPath, shortName
+	// Method with pointer/value receiver: (*Type).Method or (Type).Method
+	if strings.HasPrefix(funcName, "(") {
+		closing := strings.IndexByte(funcName, ')')
+		if closing > 1 && closing+1 < len(funcName) && funcName[closing+1] == '.' {
+			receiverStr := funcName[1:closing]
+			isPointerReceiver = strings.HasPrefix(receiverStr, "*")
+			receiverType = strings.TrimPrefix(receiverStr, "*")
+			shortName = funcName[closing+2:]
+			isMethod = true
+			return
+		}
+	}
+
+	// Method without parens: Type.Method
+	if funcDot := strings.IndexByte(funcName, '.'); funcDot > 0 {
+		receiverType = funcName[:funcDot]
+		shortName = funcName[funcDot+1:]
+		isMethod = true
+		return
+	}
+
+	shortName = funcName
+	return
 }
 
-// SetPackageInfo parses the function name and sets PackagePath and ShortName.
+// SetPackageInfo parses the function name and sets PackagePath, ShortName,
+// and method receiver fields.
 func (f *Function) SetPackageInfo() {
-	f.PackagePath, f.ShortName = ParsePackageName(f.Name)
+	f.PackagePath, f.ShortName, f.ReceiverType, f.IsPointerReceiver, f.IsMethod = ParsePackageName(f.Name)
+}
+
+// BuildStructs groups user functions by their receiver type into struct
+// definitions. The initial PackagePath is taken from the first method.
+func (r *RecoverResult) BuildStructs() {
+	groups := make(map[string]*StructType)
+
+	for _, f := range r.UserFunctions {
+		if !f.IsMethod || f.ReceiverType == "" {
+			continue
+		}
+		st, ok := groups[f.ReceiverType]
+		if !ok {
+			st = &StructType{
+				Name:        f.ReceiverType,
+				PackagePath: f.PackagePath,
+			}
+			groups[f.ReceiverType] = st
+		}
+		st.Methods = append(st.Methods, f)
+	}
+
+	r.Structs = make([]*StructType, 0, len(groups))
+	for _, st := range groups {
+		r.Structs = append(r.Structs, st)
+	}
+}
+
+// RefineStructPackages updates each struct's PackagePath to the consensus
+// of its methods' packages. If methods disagree (e.g. after callgraph
+// refinement), the majority package wins.
+func (r *RecoverResult) RefineStructPackages() {
+	for _, st := range r.Structs {
+		pkgCounts := make(map[string]int)
+		for _, m := range st.Methods {
+			pkgCounts[m.PackagePath]++
+		}
+		best := ""
+		bestCount := 0
+		for pkg, count := range pkgCounts {
+			if count > bestCount {
+				best = pkg
+				bestCount = count
+			}
+		}
+		if best != "" {
+			st.PackagePath = best
+		}
+	}
 }
 
 // RecoverResult holds all recovered functions and any warnings.
 type RecoverResult struct {
-	Functions      []*Function
-	UserFunctions  []*Function
-	Warnings       []string
-	GoMainPackage  string
-	Packages       map[string][]*Function
+	Functions     []*Function
+	UserFunctions []*Function
+	Warnings      []string
+	GoMainPackage string
+	Packages      map[string][]*Function
+	Structs       []*StructType
 }
 
 // FilterUserFunctions separates user code from runtime/stdlib functions

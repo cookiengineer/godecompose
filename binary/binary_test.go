@@ -5,9 +5,9 @@ import (
 	"testing"
 
 	"github.com/cookiengineer/godecompose/binary"
-	_ "github.com/cookiengineer/godecompose/elf"
-	_ "github.com/cookiengineer/godecompose/macho"
-	_ "github.com/cookiengineer/godecompose/pe"
+	_ "github.com/cookiengineer/godecompose/binary/elf"
+	_ "github.com/cookiengineer/godecompose/binary/macho"
+	_ "github.com/cookiengineer/godecompose/binary/pe"
 )
 
 func TestOpenELF(t *testing.T) {

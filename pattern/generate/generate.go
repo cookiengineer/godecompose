@@ -21,6 +21,7 @@ type Generator struct {
 	instructions []disasm.Instruction
 	functions    []*function.Function
 	packages     map[string][]*function.Function
+	structs      []*function.StructType
 }
 
 // New creates a generator from matched patterns and instructions.
@@ -37,12 +38,14 @@ func NewForProject(
 	instructions []disasm.Instruction,
 	funcs []*function.Function,
 	pkgs map[string][]*function.Function,
+	structs []*function.StructType,
 ) *Generator {
 	return &Generator{
 		matches:      matches,
 		instructions: instructions,
 		functions:    funcs,
 		packages:     pkgs,
+		structs:      structs,
 	}
 }
 
@@ -100,9 +103,14 @@ func (g *Generator) WriteProject(dir string, goModule string) error {
 		}
 	}
 
+	pkgStructs := make(map[string][]*function.StructType)
+	for _, st := range g.structs {
+		pkgStructs[st.PackagePath] = append(pkgStructs[st.PackagePath], st)
+	}
+
 	// Generate main package (entry point)
 	if mainPkg, ok := g.packages["main"]; ok {
-		if err := g.writePackage(dir, "", mainPkg, funcInsts); err != nil {
+		if err := g.writePackage(dir, "", mainPkg, pkgStructs, funcInsts); err != nil {
 			return err
 		}
 	}
@@ -113,7 +121,7 @@ func (g *Generator) WriteProject(dir string, goModule string) error {
 			continue
 		}
 		pkgDir := filepath.Join(dir, pkgPath)
-		if err := g.writePackage(pkgDir, pkgPath, funcs, funcInsts); err != nil {
+		if err := g.writePackage(pkgDir, pkgPath, funcs, pkgStructs, funcInsts); err != nil {
 			return err
 		}
 	}
@@ -127,7 +135,7 @@ func (g *Generator) WriteProject(dir string, goModule string) error {
 	return nil
 }
 
-func (g *Generator) writePackage(dir string, pkgPath string, funcs []*function.Function, funcInsts map[string][]disasm.Instruction) error {
+func (g *Generator) writePackage(dir string, pkgPath string, funcs []*function.Function, pkgStructs map[string][]*function.StructType, funcInsts map[string][]disasm.Instruction) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create package dir %s: %w", dir, err)
 	}
@@ -156,6 +164,17 @@ func (g *Generator) writePackage(dir string, pkgPath string, funcs []*function.F
 		return funcs[i].EntryPoint < funcs[j].EntryPoint
 	})
 
+	// Output struct definitions first
+	if structs, ok := pkgStructs[pkgPath]; ok {
+		for _, st := range structs {
+			if st.Name != "" {
+				buf.WriteString(fmt.Sprintf("type %s struct {\n", st.Name))
+				buf.WriteString("\t// fields unknown\n")
+				buf.WriteString("}\n\n")
+			}
+		}
+	}
+
 	for _, f := range funcs {
 		insts := funcInsts[f.Name]
 		if len(insts) == 0 {
@@ -165,7 +184,17 @@ func (g *Generator) writePackage(dir string, pkgPath string, funcs []*function.F
 		if pkgName == "main" && f.ShortName == "main" {
 			g.writeFunctionBody(&buf, f, insts, "\t")
 		} else if pkgName != "main" || f.ShortName != "main" {
-			buf.WriteString(fmt.Sprintf("\nfunc %s() {\n", f.ShortName))
+			buf.WriteString("\n")
+			if f.IsMethod && f.ReceiverType != "" {
+				receiverVar := strings.ToLower(f.ReceiverType[:1])
+				if f.IsPointerReceiver {
+					buf.WriteString(fmt.Sprintf("func (%s *%s) %s() {\n", receiverVar, f.ReceiverType, f.ShortName))
+				} else {
+					buf.WriteString(fmt.Sprintf("func (%s %s) %s() {\n", receiverVar, f.ReceiverType, f.ShortName))
+				}
+			} else {
+				buf.WriteString(fmt.Sprintf("func %s() {\n", f.ShortName))
+			}
 			g.writeFunctionBody(&buf, f, insts, "\t")
 		}
 	}

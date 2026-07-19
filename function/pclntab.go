@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/cookiengineer/godecompose/binary"
 	"github.com/cookiengineer/godecompose/disasm"
@@ -50,6 +51,9 @@ func RecoverFromBinary(bin binary.Binary, instructions []disasm.Instruction) (*R
 			}
 			result.Functions = funcs
 			result.FilterUserFunctions()
+			result.RefinePackagesByCallGraph(instructions)
+			result.BuildStructs()
+			result.RefineStructPackages()
 			return result, nil
 		}
 	}
@@ -60,6 +64,9 @@ func RecoverFromBinary(bin binary.Binary, instructions []disasm.Instruction) (*R
 	}
 	result.Functions = funcs
 	result.FilterUserFunctions()
+	result.RefinePackagesByCallGraph(instructions)
+	result.BuildStructs()
+	result.RefineStructPackages()
 
 	if len(funcs) == 0 {
 		funcs = recoverByHeuristics(instructions, bin.EntryPoint())
@@ -67,6 +74,10 @@ func RecoverFromBinary(bin binary.Binary, instructions []disasm.Instruction) (*R
 			f.Blocks = extractFunctionBlocks(instructions, f.EntryPoint, f.EndAddr)
 		}
 		result.Functions = funcs
+		result.FilterUserFunctions()
+		result.RefinePackagesByCallGraph(instructions)
+		result.BuildStructs()
+		result.RefineStructPackages()
 	}
 
 	return result, nil
@@ -317,6 +328,101 @@ func recoverByHeuristics(instructions []disasm.Instruction, entryPoint uint64) [
 	}
 
 	return funcs
+}
+
+// RefinePackagesByCallGraph analyzes the call graph from the disassembly
+// to correctly place unexported (lowercase) functions. In Go, a lowercase
+// function can only be called from within its defining package, so if all
+// callers of a lowercase function belong to the same package, the function
+// belongs to that package. Stdlib and runtime callers are excluded.
+func (r *RecoverResult) RefinePackagesByCallGraph(instructions []disasm.Instruction) {
+	if len(r.Functions) == 0 || len(instructions) == 0 {
+		return
+	}
+
+	funcStarts := make([]uint64, len(r.Functions))
+	for i, f := range r.Functions {
+		funcStarts[i] = f.EntryPoint
+	}
+
+	entryToFunc := make(map[uint64]*Function, len(r.Functions))
+	for _, f := range r.Functions {
+		entryToFunc[f.EntryPoint] = f
+	}
+
+	findCaller := func(addr uint64) *Function {
+		idx := sort.Search(len(funcStarts), func(i int) bool {
+			return funcStarts[i] > addr
+		}) - 1
+		if idx < 0 {
+			return nil
+		}
+		if idx+1 < len(r.Functions) {
+			if addr >= funcStarts[idx+1] {
+				return nil
+			}
+		}
+		return r.Functions[idx]
+	}
+
+	isLowercase := func(s string) bool {
+		if len(s) == 0 {
+			return false
+		}
+		for _, r := range s {
+			return unicode.IsLower(r)
+		}
+		return false
+	}
+
+	callerPkgs := make(map[uint64]map[string]struct{})
+
+	for _, inst := range instructions {
+		if !inst.IsCall || inst.BranchTarget == 0 {
+			continue
+		}
+		callee, ok := entryToFunc[inst.BranchTarget]
+		if !ok || callee.Classification != ClassUser {
+			continue
+		}
+		if !isLowercase(callee.ShortName) {
+			continue
+		}
+
+		caller := findCaller(inst.Address)
+		if caller == nil {
+			continue
+		}
+		if caller.Classification == ClassStdlib || caller.Classification == ClassRuntime {
+			continue
+		}
+
+		if callerPkgs[callee.EntryPoint] == nil {
+			callerPkgs[callee.EntryPoint] = make(map[string]struct{})
+		}
+		callerPkgs[callee.EntryPoint][caller.PackagePath] = struct{}{}
+	}
+
+	changed := false
+	for _, f := range r.UserFunctions {
+		pkgs := callerPkgs[f.EntryPoint]
+		if len(pkgs) == 1 {
+			for pkg := range pkgs {
+				if pkg != f.PackagePath && pkg != "" {
+					f.PackagePath = pkg
+					changed = true
+				}
+				break
+			}
+		}
+	}
+
+	if changed {
+		r.Packages = make(map[string][]*Function)
+		for _, f := range r.UserFunctions {
+			r.Packages[f.PackagePath] = append(r.Packages[f.PackagePath], f)
+		}
+	}
 }
 
 func readPtr(data []byte, ptrSize uint8) uint32 {

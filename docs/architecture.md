@@ -4,7 +4,7 @@
 
 Godecompose is a **pattern-based decompiler** built as a Go library with a CLI frontend. It recovers Go source code from compiled binaries by matching known compiler output patterns against disassembled machine code.
 
-The pipeline flows: **binary → parse → disassemble → recover functions → match patterns → generate source**.
+The pipeline flows: **binary → parse → disassemble → recover functions → classify → callgraph refine → match patterns → generate source**.
 
 ```
                          ┌─────────────────────┐
@@ -42,6 +42,14 @@ The pipeline flows: **binary → parse → disassemble → recover functions →
                     │    └─────────┬─────────┘    │
                     │              │              │
                     │    ┌─────────▼─────────┐    │
+                    │    │ Callgraph refine  │    │
+                    │    │ Lowercase fns →   │    │
+                    │    │ caller's pkg      │    │
+                    │    │ Build structs     │    │
+                    │    │ Refine struct pkgs│    │
+                    │    └─────────┬─────────┘    │
+                    │              │              │
+                    │    ┌─────────▼─────────┐    │
                     └────┤ pattern/matcher   ├────┘
                          │ Opcode-indexed    │
                          │ fuzzy CALL match  │
@@ -51,13 +59,15 @@ The pipeline flows: **binary → parse → disassemble → recover functions →
                          ┌─────────▼───────────┐
                          │ pattern/generate    │
                          │ Template expansion  │
+                         │ Struct stubs        │
+                         │ Method receivers    │
                          │ Project generation  │
                          └─────────────────────┘
 ```
 
 ## Component Design
 
-### 1. Binary Parsers (`binary/`, `elf/`, `pe/`, `macho/`)
+### 1. Binary Parsers (`binary/`, `binary/elf/`, `binary/pe/`, `binary/macho/`)
 
 **Interface**: `binary.Binary` defines the common API for all binary formats.
 
@@ -79,9 +89,9 @@ type Binary interface {
 ```
 
 **Format detection**: `binary.Open(path)` reads the first 4 bytes and dispatches:
-- `0x7F ELF` → `elf.Open()`
-- `MZ` → `pe.Open()`
-- `0xFEEDFACE` / `0xCFFAEDFE` / `0xCAFEBABE` → `macho.Open()`
+- `0x7F ELF` → `binary/elf.Open()`
+- `MZ` → `binary/pe.Open()`
+- `0xFEEDFACE` / `0xCFFAEDFE` / `0xCAFEBABE` → `binary/macho.Open()`
 
 **Go-specific extraction**:
 - ELF: `.go.buildinfo` section (V1/V2 format), `.gopclntab` section, `.note.go.buildid`
@@ -138,10 +148,21 @@ type SymLookup func(addr uint64) (name string, base uint64)
 
 **pclntab parser**: Supports Go 1.2, 1.16, and 1.18+ pclntab formats. Extracts function entry points from the PC-line table:
 - Go 1.2: Magic `0xFFFFFFFA`, fixed-size entries
-- Go 1.16: Magic `0xFFFFFFFB`, compact format
 - Go 1.18+: Magic `0xFFFFFFF0`/`0xFFFFFFF1`, generics-aware
 
 **Symbol merging**: Matches pclntab entry points against symbol table addresses to assign function names.
+
+**Method receiver parsing**: `ParsePackageName()` extracts package path, function name, and optional method receiver from Go symbol names:
+
+| Symbol | Package | Function/Receiver |
+|---|---|---|
+| `main.greet` | `main` | func `greet` |
+| `main.Type.Method` | `main` | `(Type).Method` |
+| `main.(*Type).Method` | `main` | `(*Type).Method` |
+| `pkg/path.Func` | `pkg/path` | func `Func` |
+| `pkg/path.Type.Method` | `pkg/path` | `(Type).Method` |
+
+Additional fields on `Function`: `ReceiverType`, `IsMethod`, `IsPointerReceiver`.
 
 **Function classification**: Each recovered function is classified:
 
@@ -154,6 +175,10 @@ type SymLookup func(addr uint64) (name string, base uint64)
 | `ClassVendor` | Other dotted names | Third-party deps |
 
 **User function filtering**: Only `ClassUser` functions pass through to the pattern matcher. Runtime and stdlib functions are skipped, reducing instruction count from ~180K to ~80 for a typical program.
+
+**Callgraph refinement** (`RefinePackagesByCallGraph`): Analyzes all CALL instructions across the binary to correctly place unexported (lowercase) functions. In Go, a lowercase function can only be called from within its defining package, so if all callers of a lowercase function belong to the same package, the function is reassigned there. Stdlib and runtime callers are excluded from analysis.
+
+**Struct tracking** (`BuildStructs`, `RefineStructPackages`): Groups user functions by their receiver type into `StructType` definitions. Each struct's package path is determined by consensus of its methods' packages. The callgraph refinement ensures lowercase methods (and their containing structs) are placed in the calling package.
 
 **Module name extraction**: The Go module path is detected from:
 1. `GoBuildInfo.Main` (if build info is parsed correctly)
@@ -225,6 +250,8 @@ Target:   "sync mutex lock"  → each word found as prefix → MATCH
 - `go.mod` with the detected module name
 - `main.go` for the `main` package with `func main()` entry point
 - Sub-package directories with `.go` files for each recovered package
+- **Struct stubs**: For each recovered struct type, an empty struct definition with a `// fields unknown` comment
+- **Method receivers**: Functions that are methods include their receiver syntax (`func (r *Type) Method() { ... }`) in generated output
 
 ### 7. Pattern Database (`database/`)
 
@@ -240,7 +267,9 @@ Target:   "sync mutex lock"  → each word found as prefix → MATCH
 - Darwin/macOS: 70 syscalls
 - FreeBSD: 57 syscalls
 
-### 8. CLI (`cmd/godecompose/`)
+### 8. CLI (`cmd/godecompose/`) and Actions (`actions/`)
+
+The `actions/` package provides reusable decompilation pipeline steps with descriptive parameters. The CLI layer (`cmd/godecompose/main.go`) handles argument parsing, binary opening, and database loading, then delegates work to the actions package.
 
 | Command | Description |
 |---|---|
@@ -249,6 +278,14 @@ Target:   "sync mutex lock"  → each word found as prefix → MATCH
 | `decompile <binary> [--output=<dir>]` | Full pipeline with pattern matching and source generation |
 | `patterns list` | List loaded patterns and syscall tables with statistics |
 | `patterns validate <file>` | Validate a `.hexpat` pattern file through lex→parse→validate→evaluate |
+
+**Actions API**:
+- `actions.Info(b binary.Binary) error`
+- `actions.Disassemble(b binary.Binary) error`
+- `actions.DecompileBinary(b binary.Binary, db *database.Database) (*DecompileOutput, error)`
+- `actions.PatternsList(db *database.Database) error`
+- `actions.PatternsValidate(filePath string) error`
+- `actions.WriteProject(output *DecompileOutput, dir string) error`
 
 ## Key Design Decisions
 
@@ -290,31 +327,32 @@ A typical Go binary contains ~180K instructions, of which ~95% are runtime and s
 
 ```
 godecompose/
-├── binary/              # Common binary interface (ELF/PE/Mach-O abstraction)
-├── cmd/godecompose/     # CLI entry point
-├── database/            # Pattern database + syscall tables
-├── disasm/              # x86_64 disassembler + Go Plan 9 asm
-├── docs/                # Documentation
+├── actions/              # Reusable decompilation pipeline steps
+├── binary/               # Common binary interface + format parsers
+│   ├── elf/              # ELF binary parser
+│   ├── pe/               # PE/COFF binary parser
+│   └── macho/            # Mach-O binary parser
+├── cmd/godecompose/      # CLI entry point
+├── database/             # Pattern database + syscall tables
+├── disasm/               # x86_64 disassembler + Go Plan 9 asm
+├── docs/                 # Documentation
 ├── e2e/
-│   ├── e2e_test.go              # Binary parsing/disassembly E2E tests
-│   ├── decompile/              # Per-package decompilation E2E tests
+│   ├── e2e_test.go               # Binary parsing/disassembly E2E tests
+│   ├── decompile/               # Per-package decompilation E2E tests
 │   │   ├── fmt/fmt_test.go
 │   │   ├── sync/sync_test.go
 │   │   └── ...
 │   └── internal/decompile/     # Shared test helpers
-├── elf/                 # ELF binary parser
-├── function/            # Function recovery (pclntab, classification)
-├── goutil/              # Go compilation test utilities
-├── macho/               # Mach-O binary parser
-├── pattern/             # Pattern language engine (lang/, matcher/, generate/)
-├── patterns/            # Pattern files (.hexpat) and syscall tables (JSON)
+├── function/             # Function recovery (pclntab, classification, callgraph, structs)
+├── goutil/               # Go compilation test utilities
+├── pattern/              # Pattern language engine (lang/, matcher/, generate/)
+├── patterns/             # Pattern files (.hexpat) and syscall tables (JSON)
 │   └── libs/golang/
-│       ├── stdlib/      # Go stdlib patterns (one subdir per package)
-│       ├── runtime/     # Go runtime patterns
-│       └── highlevel/   # Single-CALL high-level patterns
-├── pe/                  # PE/COFF binary parser
-├── testdata/src/        # Test Go source programs (one subdir per package)
-├── types/               # Arch/Platform enums
+│       ├── stdlib/       # Go stdlib patterns (one subdir per package)
+│       ├── runtime/      # Go runtime patterns
+│       └── highlevel/    # Single-CALL high-level patterns
+├── testdata/src/         # Test Go source programs (one subdir per package)
+├── types/                # Arch/Platform enums
 ├── go.mod
 └── go.sum
 ```

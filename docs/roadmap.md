@@ -18,13 +18,27 @@ All phases complete. The project is in active development with 200+ patterns (st
 - [x] Project directory generation: `go.mod` + `main.go` + sub-package `.go` files
 - [x] CLI `--output=<dir>` flag for project output
 - [x] E2E tests verify user-function filtering and project generation
+- [x] Method receiver parsing: `(*Type).Method` and `Type.Method` patterns detected from symbols
+- [x] Callgraph-based package refinement: lowercase functions placed in caller's package
+- [x] Struct type tracking: methods grouped by receiver, consensus package assignment
+- [x] Struct stubs generated in project output with method receiver syntax
+- [x] `actions/` package: reusable decomposition pipeline steps (`Info`, `Disassemble`, `DecompileBinary`, `PatternsList`, `PatternsValidate`)
+- [x] CLI refactored to thin parameter-parsing layer delegating to actions
 
 ### Realized API
 
-- `function.ParsePackageName(fullName) (pkgPath, shortName)`
+- `function.ParsePackageName(fullName) (pkgPath, shortName, receiverType, isPointerReceiver, isMethod)`
+- `function.Function` fields: `ReceiverType`, `IsMethod`, `IsPointerReceiver`
+- `function.StructType` — groups methods by receiver, tracks package consensus
+- `function.RecoverResult.Structs` — recovered struct types
+- `function.RecoverResult.BuildStructs()` — groups user methods by receiver
+- `function.RecoverResult.RefineStructPackages()` — consensus package for structs
+- `function.RecoverResult.RefinePackagesByCallGraph(instructions)` — callgraph-based placement
 - `function.ClassifyFunction(name, mainPackage) Classification`
 - `RecoverResult.Packages` — functions grouped by package path
-- `generate.WriteProject(dir, goModule)` — writes complete Go project directory
+- `generate.WriteProject(dir, goModule)` — writes complete Go project directory with struct stubs and method receivers
+- `actions.DecompileBinary(b, db) (*DecompileOutput, error)` — reusable pipeline
+- `actions.WriteProject(output, dir) error` — project generation
 
 ---
 
@@ -35,9 +49,9 @@ All phases complete. The project is in active development with 200+ patterns (st
 - [x] Initialize Go module (`github.com/cookiengineer/godecompose`)
 - [x] Implement `types/` package (Arch, Platform enums)
 - [x] Implement `binary/binary.go` — common interface (Binary, Section, Symbol), registry-based `Open()`
-- [x] Implement `elf/` — ELF parser wrapping `debug/elf`, with Go build info (V1/V2) and pclntab extraction
-- [x] Implement `pe/` — PE/COFF parser wrapping `debug/pe`
-- [x] Implement `macho/` — Mach-O parser wrapping `debug/macho`
+- [x] Implement `binary/elf/` — ELF parser wrapping `debug/elf`, with Go build info (V1/V2) and pclntab extraction
+- [x] Implement `binary/pe/` — PE/COFF parser wrapping `debug/pe`
+- [x] Implement `binary/macho/` — Mach-O parser wrapping `debug/macho`
 - [x] Unit tests: format detection, ELF integration test
 - [x] E2E tests: cross-compile Go → parse ELF/PE/Mach-O → verify sections, symbols, build info
 
@@ -214,7 +228,7 @@ All phases complete. The project is in active development with 200+ patterns (st
 
 ## Phase 8: CLI and Integration ✓
 
-**Completed.** Working command-line decompiler with full pipeline integration.
+**Completed.** Working command-line decompiler with full pipeline integration. CLI logic extracted into reusable `actions/` package.
 
 ### Completed Tasks
 
@@ -223,6 +237,8 @@ All phases complete. The project is in active development with 200+ patterns (st
 - [x] `godecompose decompile <binary>` — Full pipeline: parse → disasm → load DB → match patterns → generate source
 - [x] `godecompose patterns list` — List loaded patterns and syscall tables with stats
 - [x] `godecompose patterns validate <file>` — Lex → parse → validate → evaluate a .hexpat file
+- [x] `actions/` package with `Info`, `Disassemble`, `DecompileBinary`, `PatternsList`, `PatternsValidate`
+- [x] CLI refactored to thin parameter-parsing layer delegating to `actions/*`
 
 ### Verified CLI Output
 
