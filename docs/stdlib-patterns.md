@@ -2,20 +2,48 @@
 
 ## File Layout Convention
 
-Every stdlib package has a 1:1:1 mapping between three directories:
+Each Go function/method has its own `.hexpat` file at a path mirroring the Go
+import path. Filenames use exact Go casing with dots for methods. Patterns are
+organized into three independently-loaded modules:
 
-| Purpose | Path Pattern |
-|---|---|
-| Pattern definitions | `patterns/libs/golang/stdlib/<package>/<package>.hexpat` |
-| Test source programs | `testdata/src/<package>/main.go` |
-| E2E decompile tests | `e2e/decompile/<package>/<package>_test.go` |
+| Module | Purpose | Location |
+|---|---|---|
+| stdlib | Multi-instruction patterns (highest confidence) | `patterns/golang/stdlib/<import-path>/<Func>.hexpat` |
+| runtime | Multi-instruction runtime patterns | `patterns/golang/runtime/<Func>.hexpat` |
+| fallback | Single-CALL idiomatic patterns for stripped binaries | `patterns/golang/fallback/<import-path>/<Func>.hexpat` |
+| syscalls | Kernel syscall tables (JSON) | `database/syscall/tables/<os>/syscall_*.json` |
+| Test sources | Go test programs | `testdata/src/<package>/main.go` |
+| E2E tests | Decompile pipeline tests | `e2e/decompile/<package>/<package>_test.go` |
 
-Shared test helpers live in `e2e/internal/decompile/helpers.go`. Each E2E test compiles the testdata Go program for `linux/amd64`, disassembles the binary, loads all pattern files, matches patterns against user-function instructions, generates decompiled source, and verifies that the pipeline produces non-empty results.
+Examples:
+- `fmt.Fprintln` → `patterns/golang/stdlib/fmt/Fprintln.hexpat`
+- `net/http.Get` → `patterns/golang/stdlib/net/http/Get.hexpat`
+- `sync.(*Mutex).Lock` → `patterns/golang/stdlib/sync/Mutex.Lock.hexpat`
+- `strings.Builder.WriteString` → `patterns/golang/stdlib/strings/Builder.WriteString.hexpat`
+- `runtime.deferproc` → `patterns/golang/runtime/deferproc.hexpat`
+- Fallback `fmt.Println` → `patterns/golang/fallback/fmt/Println.hexpat`
+
+All patterns are embedded in the `godecompose` binary via `//go:embed` in
+`patterns/golang/embed.go`. The three modules are loaded independently:
+```go
+golang.LoadStdlib(db)   // always loaded
+golang.LoadRuntime(db)  // always loaded
+golang.LoadFallback(db) // loaded on demand for stripped binaries
+```
+
+Shared E2E test helpers live in `e2e/internal/decompile/helpers.go`. Each E2E
+test compiles the testdata Go program for `linux/amd64`, disassembles the
+binary, loads all pattern files, matches patterns against user-function
+instructions, generates decompiled source, and verifies that the pipeline
+produces non-empty results.
 
 ## Pattern Structure
 
 Each stdlib pattern follows the CALL-matching approach:
-- A single `CALL` instruction that matches by symbol name in the disassembled GoSyntax
+- A `CALL` instruction that matches by symbol name in the disassembled GoSyntax
+- Multi-instruction patterns include register setup before the CALL for higher
+  confidence matching
+- Single-CALL patterns (in the fallback module) match only by symbol name
 - An optional `gen` block describing the recovered Go source
 - An optional `bind` block for variable renaming
 
@@ -105,8 +133,8 @@ All documented packages are fully implemented with patterns, testdata programs, 
 ## Summary
 
 All Go standard library packages documented in this plan are fully implemented with:
-- Pattern definitions (`.hexpat` files)
+- Pattern definitions (`.hexpat` files) — 550+ per-function files across stdlib (437), runtime (87), and fallback (26) modules
 - Test source programs (`main.go`)
 - End-to-end decompile tests (compile → disassemble → match → generate → verify)
 
-Total: **50+ packages** with **~350+ patterns** across stdlib, runtime, and high-level categories, all with automated E2E tests.
+Total: **50+ packages** with **550+ patterns** across stdlib, runtime, and fallback modules, all with automated E2E tests.

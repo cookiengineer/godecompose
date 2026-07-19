@@ -5,12 +5,13 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/cookiengineer/godecompose/actions"
 	"github.com/cookiengineer/godecompose/binary"
 	"github.com/cookiengineer/godecompose/database"
+	"github.com/cookiengineer/godecompose/database/syscall"
+	"github.com/cookiengineer/godecompose/patterns/golang"
 
 	_ "github.com/cookiengineer/godecompose/binary/elf"
 	_ "github.com/cookiengineer/godecompose/binary/macho"
@@ -138,23 +139,16 @@ func openBinary(path string) binary.Binary {
 }
 
 func loadDatabase() *database.Database {
-	exe, _ := os.Executable()
-	baseDir := filepath.Dir(exe)
-	patternsDir := filepath.Join(baseDir, "..", "..", "patterns")
-
-	if _, err := os.Stat(filepath.Join(patternsDir, "kernels")); err != nil {
-		patternsDir = filepath.Join(baseDir, "patterns")
-	}
-	if _, err := os.Stat(filepath.Join(patternsDir, "kernels")); err != nil {
-		patternsDir = "patterns"
-	}
-
 	db := database.New()
-	if err := db.LoadSyscallsFromDir(filepath.Join(patternsDir, "kernels")); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: loading syscall tables: %v\n", err)
+
+	if err := golang.LoadStdlib(db); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: loading stdlib patterns: %v\n", err)
 	}
-	if err := db.LoadPatternsFromDir(filepath.Join(patternsDir, "libs")); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: loading patterns: %v\n", err)
+	if err := golang.LoadRuntime(db); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: loading runtime patterns: %v\n", err)
+	}
+	if err := db.LoadSyscallsFromFS(syscall.TablesFS); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: loading syscall tables: %v\n", err)
 	}
 
 	return db

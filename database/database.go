@@ -5,6 +5,7 @@ package database
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -153,6 +154,150 @@ func (db *Database) Stats() string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// LoadFromFS walks an fs.FS (such as embed.FS or os.DirFS) and loads all .hexpat
+// files found under root. Patterns are compiled and registered into the database.
+func (db *Database) LoadFromFS(fsys fs.FS, root string) error {
+	return fs.WalkDir(fsys, root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".hexpat") {
+			return nil
+		}
+
+		data, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+
+		if err := db.LoadFromSource(string(data), path); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+
+		return nil
+	})
+}
+
+// LoadFromSource compiles a single .hexpat source string and registers all
+// resulting patterns into the database. sourceName is used for error messages.
+func (db *Database) LoadFromSource(source, sourceName string) error {
+	l := lexer.NewWithFile(source, sourceName)
+	tokens, err := l.Lex()
+	if err != nil {
+		return err
+	}
+
+	pp := preprocessor.New(nil)
+	tokens, err = pp.Process(tokens)
+	if err != nil {
+		return err
+	}
+
+	p := parser.New(tokens)
+	prog, err := p.Parse()
+	if err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+
+	e := evaluator.New()
+	patterns, err := e.Evaluate(prog)
+	if err != nil {
+		return err
+	}
+
+	for _, pat := range patterns {
+		db.Register(pat)
+	}
+
+	return nil
+}
+
+// LoadSyscallsFromFS loads all JSON syscall tables from an fs.FS.
+func (db *Database) LoadSyscallsFromFS(fsys fs.FS) error {
+	return fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".json") {
+			return nil
+		}
+
+		data, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			return err
+		}
+
+		var table syscall.Table
+		if err := json.Unmarshal(data, &table); err != nil {
+			return err
+		}
+
+		table.Platform = types.PlatformFromString(table.PlatformStr)
+		db.Syscalls[table.Platform] = &table
+
+		return nil
+	})
+}
+
+// Register adds a compiled pattern to the database, building the opcode index.
+func (db *Database) Register(p *evaluator.CompiledPattern) {
+	db.addPattern(p)
+}
+
+// Deregister removes a pattern by name from the database, rebuilding the
+// opcode index. Returns an error if no pattern with the given name exists.
+func (db *Database) Deregister(name string) error {
+	idx := -1
+	for i, p := range db.Patterns {
+		if p.Name == name {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("pattern %q not found", name)
+	}
+	db.Patterns = append(db.Patterns[:idx], db.Patterns[idx+1:]...)
+	db.rebuildIndex()
+	return nil
+}
+
+// DeregisterLibrary removes all patterns whose Library field matches the
+// given library name. Returns the count of patterns removed.
+func (db *Database) DeregisterLibrary(library string) int {
+	var kept []*evaluator.CompiledPattern
+	removed := 0
+	for _, p := range db.Patterns {
+		if p.Library == library {
+			removed++
+		} else {
+			kept = append(kept, p)
+		}
+	}
+	db.Patterns = kept
+	db.rebuildIndex()
+	return removed
+}
+
+func (db *Database) rebuildIndex() {
+	db.byOpcode = make(map[string][]*evaluator.CompiledPattern)
+	for _, p := range db.Patterns {
+		for _, alt := range p.Alternatives {
+			if len(alt) == 0 {
+				continue
+			}
+			key := strings.ToUpper(alt[0].Opcode)
+			db.byOpcode[key] = append(db.byOpcode[key], p)
+		}
+	}
 }
 
 func (db *Database) loadPatternFile(path string) ([]*evaluator.CompiledPattern, error) {

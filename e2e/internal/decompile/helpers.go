@@ -11,9 +11,11 @@ import (
 	"github.com/cookiengineer/godecompose/actions"
 	"github.com/cookiengineer/godecompose/binary"
 	"github.com/cookiengineer/godecompose/database"
+	"github.com/cookiengineer/godecompose/database/syscall"
 	"github.com/cookiengineer/godecompose/disasm"
 	"github.com/cookiengineer/godecompose/function"
 	"github.com/cookiengineer/godecompose/pattern/matcher"
+	"github.com/cookiengineer/godecompose/patterns/golang"
 
 	_ "github.com/cookiengineer/godecompose/binary/elf"
 	_ "github.com/cookiengineer/godecompose/binary/macho"
@@ -83,14 +85,19 @@ func Decompile(t *testing.T, b binary.Binary) Result {
 
 func loadTestDb(t *testing.T) *database.Database {
 	t.Helper()
-	_, thisFile, _, _ := runtime.Caller(0)
-	baseDir := filepath.Dir(thisFile)
-	patternsDir := filepath.Join(baseDir, "..", "..", "..", "patterns")
 
 	db := database.New()
-	_ = db.LoadSyscallsFromDir(filepath.Join(patternsDir, "kernels"))
-	if err := db.LoadPatternsFromDir(filepath.Join(patternsDir, "libs")); err != nil {
-		t.Logf("loading patterns: %v", err)
+	if err := golang.LoadStdlib(db); err != nil {
+		t.Logf("loading stdlib patterns: %v", err)
+	}
+	if err := golang.LoadRuntime(db); err != nil {
+		t.Logf("loading runtime patterns: %v", err)
+	}
+	if err := golang.LoadFallback(db); err != nil {
+		t.Logf("loading fallback patterns: %v", err)
+	}
+	if err := db.LoadSyscallsFromFS(syscall.TablesFS); err != nil {
+		t.Logf("loading syscall tables: %v", err)
 	}
 	return db
 }
