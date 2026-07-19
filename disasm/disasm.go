@@ -3,6 +3,8 @@
 package disasm
 
 import (
+	"strings"
+
 	"golang.org/x/arch/x86/x86asm"
 )
 
@@ -82,12 +84,14 @@ func DecodeStreamWithSymbols(data []byte, baseAddr uint64, lookup SymLookup) ([]
 			symLookup = x86asm.SymLookup(lookup)
 		}
 
+		goSyntax := x86asm.GoSyntax(inst, pc, symLookup)
+
 		instr := Instruction{
 			Address:      pc,
 			Bytes:        data[offset : offset+inst.Len],
-			Opcode:       inst.Op.String(),
+			Opcode:       extractOpcode(goSyntax),
 			IntelSyntax:  x86asm.IntelSyntax(inst, pc, symLookup),
-			GoSyntax:     x86asm.GoSyntax(inst, pc, symLookup),
+			GoSyntax:     goSyntax,
 			Size:         inst.Len,
 			IsCall:       inst.Op == x86asm.CALL,
 			IsReturn:     inst.Op == x86asm.RET,
@@ -150,6 +154,70 @@ func resolveBranchTarget(inst x86asm.Inst, pc uint64) uint64 {
 	}
 
 	return 0
+}
+
+func extractOpcode(goSyntax string) string {
+	for i, ch := range goSyntax {
+		if ch == ' ' || ch == '\t' || ch == ';' {
+			opcode := goSyntax[:i]
+			if opcode == "REP" && ch == ';' {
+				rest := strings.TrimLeft(goSyntax[i+1:], " \t")
+				for j, c := range rest {
+					if c == ' ' || c == '\t' {
+						return normalizeOpcode(rest[:j])
+					}
+				}
+				return normalizeOpcode(rest)
+			}
+			return normalizeOpcode(opcode)
+		}
+	}
+	return normalizeOpcode(goSyntax)
+}
+
+func normalizeOpcode(opcode string) string {
+	base := opcode
+	if len(opcode) > 1 {
+		switch opcode[len(opcode)-1] {
+		case 'Q', 'L', 'W', 'B':
+			base = opcode[:len(opcode)-1]
+		}
+	}
+	switch opcode {
+	case "JE":
+		return "JEQ"
+	case "JG":
+		return "JGT"
+	case "JL":
+		return "JLT"
+	case "JB":
+		return "JLO"
+	case "JA":
+		return "JHI"
+	case "JAE":
+		return "JCC"
+	case "JBE":
+		return "JLS"
+	case "JS":
+		return "JMI"
+	case "JNS":
+		return "JPL"
+	case "JO":
+		return "JOS"
+	case "JNO":
+		return "JOC"
+	case "JP":
+		return "JPS"
+	case "JNP":
+		return "JPC"
+	case "NOPL", "NOPW":
+		return "NOP"
+	}
+	switch base {
+	case "TEST", "CMP":
+		return base
+	}
+	return opcode
 }
 
 func opcodeToX86asm(opcode string) x86asm.Op {

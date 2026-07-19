@@ -55,7 +55,7 @@ func New(patterns []*evaluator.CompiledPattern) *Matcher {
 // Match scans the instruction stream for pattern matches and returns the
 // best matches with minimal overlap. Limits to 10000 raw matches.
 func (m *Matcher) Match(instructions []disasm.Instruction) []Match {
-	const maxRawMatches = 50000
+	const maxRawMatches = 10000
 	var allMatches []Match
 
 	for i, inst := range instructions {
@@ -196,8 +196,8 @@ func fuzzyMatchCall(goSyntax, target string) bool {
 		return true
 	}
 
-	norm := strings.NewReplacer(".", " ", "(", " ", ")", " ", "/", " ", "*", " ").Replace(lower)
-	normTarget := strings.NewReplacer(".", " ").Replace(lowerTarget)
+	norm := strings.NewReplacer(".", " ", "(", " ", ")", " ", "/", " ", "*", " ", "_", " ").Replace(lower)
+	normTarget := strings.NewReplacer(".", " ", "_", " ").Replace(lowerTarget)
 	normParts := strings.Fields(norm)
 	normTargetParts := strings.Fields(normTarget)
 
@@ -348,30 +348,25 @@ func resolveConflicts(matches []Match) []Match {
 	copy(sorted, matches)
 
 	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Confidence > sorted[j].Confidence
+		if sorted[i].Confidence != sorted[j].Confidence {
+			return sorted[i].Confidence > sorted[j].Confidence
+		}
+		return (sorted[i].EndAddr - sorted[i].StartAddr) > (sorted[j].EndAddr - sorted[j].StartAddr)
 	})
 
-	var result []Match
-	covered := make(map[uint64]bool)
-
+	occupied := make([]Match, 0, len(sorted))
 	for _, m := range sorted {
 		overlap := false
-		end := m.EndAddr
-		if end > m.StartAddr+10000 {
-			end = m.StartAddr + 10000
-		}
-		for addr := m.StartAddr; addr < end && !overlap; addr++ {
-			if covered[addr] {
+		for _, o := range occupied {
+			if m.StartAddr < o.EndAddr && m.EndAddr > o.StartAddr {
 				overlap = true
+				break
 			}
 		}
 		if !overlap {
-			result = append(result, m)
-			for addr := m.StartAddr; addr < end; addr++ {
-				covered[addr] = true
-			}
+			occupied = append(occupied, m)
 		}
 	}
 
-	return result
+	return occupied
 }

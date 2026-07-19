@@ -94,11 +94,19 @@ func (g *Generator) WriteProject(dir string, goModule string) error {
 	}
 
 	// Collect instructions per function for targeted generation
+	addrToIdx := make(map[uint64]int, len(g.instructions))
+	for i, inst := range g.instructions {
+		addrToIdx[inst.Address] = i
+	}
 	funcInsts := make(map[string][]disasm.Instruction)
 	for _, f := range g.functions {
-		for _, inst := range g.instructions {
-			if inst.Address >= f.EntryPoint && inst.Address < f.EndAddr {
+		for addr := f.EntryPoint; addr < f.EndAddr; {
+			if idx, ok := addrToIdx[addr]; ok {
+				inst := g.instructions[idx]
 				funcInsts[f.Name] = append(funcInsts[f.Name], inst)
+				addr += uint64(inst.Size)
+			} else {
+				addr++
 			}
 		}
 	}

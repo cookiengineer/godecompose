@@ -263,7 +263,8 @@ instr match_write_syscall {
 **Syntax rules for `instr` blocks:**
 
 1. Each line is `<OPCODE> [operands...]`
-2. Opcodes use Go Plan 9 syntax: `MOVQ`, `ADDQ`, `CALL`, `LEAQ`, `JMP`, `JE`, `JNE`, etc.
+2. Opcodes use Go Plan 9 syntax: `MOVQ`, `ADDQ`, `CALL`, `LEAQ`, `JMP`, `JEQ`, `JNE`, `JGT`, `JLT`, `JGE`, `JLE`, `JHI`, `JLO`, `JCC`, `JLS`, `JMI`, `JPL`, `JOS`, `JOC`, `JPS`, `JPC`
+3. `TEST` and `CMP` are normalized across operand-size variants: `TESTQ`/`TESTL`/`TESTB` → `TEST`, `CMPQ`/`CMPL`/`CMPB` → `CMP`
 3. Operands can be:
    - **Literal values**: `$1`, `$0x3F`, `$42` (must match exactly)
    - **Named registers**: `RAX`, `RDI`, `RSI`, `R8-R15`, `X0-X15`
@@ -318,29 +319,35 @@ gen write_source {
 **Syntax rules for `gen` blocks:**
 
 1. Template text with `$variable` placeholders that are substituted with bound values
-2. Multiline templates
-3. Expression substitution: `${expression}` evaluates an expression and inserts its string form
-4. Conditional generation:
-
-```rust
-gen {
-    if ($platform == "linux") {
-        syscall(SYS_write, $fd_reg, $buf_reg, $count_reg);
-    } else {
-        write($fd_reg, $buf_reg, $count_reg);
-    }
-}
-```
-
-5. Loop generation (for repeated structures):
-
-```rust
-gen {
-    for (i := 0; i < $count; i++) {
-        array[$i] = ${read_u32($base + i * 4)};
-    }
-}
-```
+2. Multiline templates with balanced brace tracking: nested `{`/`}` in gen text are tracked by depth, so Go `if`/`for` bodies work correctly
+3. Variable substitution: `$identifier` resolves to a single capture variable; `${expression}` evaluates a full expression and inserts its string form
+4. Compile-time conditional generation (prefixed with `@`):
+   ```rust
+   gen {
+       @if ($platform == "linux") {
+           syscall(SYS_write, $fd_reg, $buf_reg, $count_reg);
+       } else {
+           write($fd_reg, $buf_reg, $count_reg);
+       }
+   }
+   ```
+5. Plain `if`/`for` in gen blocks (without `@` prefix) are treated as literal text, allowing Go-style output:
+   ```rust
+   gen {
+       if $err != nil {
+           return $err;
+       }
+   }
+   ```
+6. Loop generation (prefixed with `@`):
+   ```rust
+   gen {
+       @for (i := 0; i < $count; i++) {
+           array[$i] = ${read_u32($base + i * 4)};
+       }
+   }
+   ```
+7. **Important**: Avoid `//` line comments in gen blocks — the lexer strips them to end-of-line, which can eat the closing `}`. Use `/* */` block comments instead.
 
 ### `bind` Block — Variable Naming
 

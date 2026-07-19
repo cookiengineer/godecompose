@@ -233,11 +233,20 @@ func parsePclntabV12(data []byte, baseAddr uint64) []*Function {
 }
 
 func extractFunctionBlocks(instructions []disasm.Instruction, entry, end uint64) []*disasm.BasicBlock {
+	if len(instructions) == 0 {
+		return nil
+	}
+
+	startIdx := sort.Search(len(instructions), func(i int) bool {
+		return instructions[i].Address >= entry
+	})
+	if startIdx >= len(instructions) || instructions[startIdx].Address > end {
+		return nil
+	}
+
 	funcInsts := make([]disasm.Instruction, 0)
-	for _, inst := range instructions {
-		if inst.Address >= entry && (end == 0 || inst.Address < end) {
-			funcInsts = append(funcInsts, inst)
-		}
+	for i := startIdx; i < len(instructions) && instructions[i].Address < end; i++ {
+		funcInsts = append(funcInsts, instructions[i])
 	}
 
 	if len(funcInsts) == 0 {

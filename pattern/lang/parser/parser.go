@@ -612,13 +612,29 @@ func (p *Parser) parseGenBlock() (*ast.GenBlock, error) {
 	tok := p.advance() // gen
 	block := &ast.GenBlock{Tok: tok}
 	p.expect(token.LBrace)
-	for !p.peekIs(token.RBrace) && !p.isEOF() {
+	depth := 1
+	for !p.isEOF() {
+		if p.peekIs(token.LBrace) {
+			depth++
+			block.Statements = append(block.Statements,
+				&ast.GenText{Tok: p.current(), Text: p.advance().Literal})
+			continue
+		}
+		if p.peekIs(token.RBrace) {
+			depth--
+			p.advance()
+			if depth == 0 {
+				break
+			}
+			block.Statements = append(block.Statements,
+				&ast.GenText{Tok: p.current(), Text: "}"})
+			continue
+		}
 		stmt := p.parseGenStatement()
 		if stmt != nil {
 			block.Statements = append(block.Statements, stmt)
 		}
 	}
-	p.expect(token.RBrace)
 	return block, nil
 }
 
@@ -626,10 +642,17 @@ func (p *Parser) parseGenStatement() ast.GenStatement {
 	switch {
 	case p.peekIs(token.Dollar):
 		return p.parseGenExpr()
-	case p.peekIs(token.Keyword, "if"):
-		return p.parseGenConditional()
-	case p.peekIs(token.Keyword, "for"):
-		return p.parseGenLoop()
+	case p.peekIs(token.At):
+		p.advance()
+		if p.peekIs(token.Keyword, "if") {
+			p.advance()
+			return p.parseGenConditional()
+		}
+		if p.peekIs(token.Keyword, "for") {
+			p.advance()
+			return p.parseGenLoop()
+		}
+		return p.parseGenText()
 	default:
 		return p.parseGenText()
 	}
@@ -638,19 +661,38 @@ func (p *Parser) parseGenStatement() ast.GenStatement {
 func (p *Parser) parseGenText() *ast.GenText {
 	tok := p.current()
 	text := ""
-	for !p.peekIs(token.RBrace) && !p.peekIs(token.Dollar) &&
-		!p.peekIs(token.Keyword, "if") && !p.peekIs(token.Keyword, "for") && !p.isEOF() {
-		text += p.advance().Literal
-		if p.peekIs(token.Semicolon) {
-			text += p.advance().Literal
+	for !p.isEOF() {
+		if p.peekIs(token.RBrace) || p.peekIs(token.LBrace) {
+			break
 		}
+		if p.peekIs(token.Dollar) {
+			break
+		}
+		if p.peekIs(token.At) {
+			p.advance()
+			if p.peekIs(token.Keyword, "if") || p.peekIs(token.Keyword, "for") {
+				break
+			}
+			text += "@"
+			continue
+		}
+		text += p.advance().Literal
 	}
 	return &ast.GenText{Tok: tok, Text: text}
 }
 
 func (p *Parser) parseGenExpr() *ast.GenExpr {
 	tok := p.current()
-	expr := p.parseExpression()
+	p.advance() // consume $
+	var expr ast.Expression
+	if p.peekIs(token.LBrace) {
+		p.advance()
+		expr = p.parseExpression()
+		p.expect(token.RBrace)
+	} else if p.peekIs(token.Identifier) || p.peekIs(token.Keyword) {
+		idTok := p.advance()
+		expr = &ast.Identifier{Tok: idTok, Name: idTok.Literal}
+	}
 	return &ast.GenExpr{Tok: tok, Expr: expr}
 }
 

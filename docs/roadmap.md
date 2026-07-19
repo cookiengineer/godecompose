@@ -1,6 +1,6 @@
 # Roadmap
 
-All phases complete. The project is in active development with 200+ patterns (stdlib + runtime + high-level), 4 syscall tables, and full decompilation pipeline with project generation. Every stdlib package has end-to-end tests (compile → disassemble → match → generate → verify).
+Phase 10 completed. 668 patterns (stdlib + runtime + fallback + controlflow), 4 syscall tables, full decompilation pipeline with project generation. Every stdlib package has end-to-end tests.
 
 ## Phase 1: Foundation — Binary Format Parsers ✓
 [...]
@@ -246,3 +246,43 @@ All phases complete. The project is in active development with 200+ patterns (st
 - `disasm`: Decodes 378K instructions into 57K basic blocks, recovers 8,261 functions
 - `decompile`: Loads 4 syscall tables (137+121+70+57 entries) + 2 patterns, runs full pipeline
 - `patterns validate`: Validates .hexpat files through lexer → parser → validator → evaluator
+
+---
+
+## Phase 10: User-Code Control Flow & Data Type Reconstruction ✓
+
+**Completed.** Added control flow recognition (if/else, nil checks, CMP-based comparisons), Go idiom patterns, data type creation patterns, and comprehensive stdlib/runtime call coverage. Improved decompilation match rate from 7 to 2,209 (316x) on the ysco benchmark.
+
+### Completed Tasks
+
+- [x] Fix GenConditional evaluator bug (only first statement of conditional branches was processed)
+- [x] Implement GenLoop evaluation (was silently dropped)
+- [x] Fix disassembler opcode extraction: Go Plan 9 opcodes from GoSyntax with condition code mapping (JE→JEQ, JG→JGT, etc.)
+- [x] Normalize TEST/CMP opcodes across size variants (TESTQ/TESTL/TESTB → TEST, CMPQ/CMPL/CMPB → CMP)
+- [x] Gen block parser: balanced brace depth tracking for nested `{`/`}` support
+- [x] Gen block parser: `@if`/`@for` for compile-time conditionals/loops; plain `if`/`for` treated as gen text
+- [x] Gen block evaluator: whitespace insertion between gen text and gen expressions
+- [x] Fuzzy matcher: add underscore (`_`) to normalizer for runtime function names (e.g., `mapassign_faststr`)
+- [x] Conflict resolution: optimized from O(n×10000) to O(n×m) interval overlap check
+- [x] Performance: 3 O(n²) bottlenecks fixed (instruction collection, function block extraction, conflict resolution)
+- [x] Load all 4 pattern modules: stdlib, runtime, fallback, controlflow
+- [x] 93 new patterns in 6 files: control flow, Go idioms, data types, runtime extras, stdlib calls
+
+### Realized API
+
+- `disasm.extractOpcode(goSyntax)` — extracts Go Plan 9 opcode from GoSyntax string with size and CC normalization
+- `disasm.normalizeOpcode(op)` — Plan 9 condition code mapping (JE→JEQ, JG→JGT, JB→JLO, etc.)
+- `evaluator.evalGenStmt` — handles GenConditional (accumulates all statements), GenLoop (repeats body N times)
+- `parser.parseGenBlock` — balanced brace depth tracking for nested gen blocks
+- `parser.parseGenStatement` — `@if`/`@for` for compile-time, plain `if`/`for` as gen text
+- `matcher.fuzzyMatchCall` — splits on `_` in addition to `.()/*` for runtime function matching
+- `actions.DecompileBinary` — O(n) address-indexed instruction collection with progress logging
+
+### Benchmarks (ysco decompilation)
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Patterns | 550 | 668 |
+| Matches | 7 | 2,209 |
+| Unresolved stdlib/runtime CALLs | 769 | 0 |
+| Decompilation time | ∞ (timeout) | ~30s |

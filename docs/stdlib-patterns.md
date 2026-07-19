@@ -11,6 +11,7 @@ organized into three independently-loaded modules:
 | stdlib | Multi-instruction patterns (highest confidence) | `patterns/golang/stdlib/<import-path>/<Func>.hexpat` |
 | runtime | Multi-instruction runtime patterns | `patterns/golang/runtime/<Func>.hexpat` |
 | fallback | Single-CALL idiomatic patterns for stripped binaries | `patterns/golang/fallback/<import-path>/<Func>.hexpat` |
+| controlflow | Control flow, Go idioms, data types, and stdlib call patterns | `patterns/golang/controlflow/<category>.hexpat` |
 | syscalls | Kernel syscall tables (JSON) | `database/syscall/tables/<os>/syscall_*.json` |
 | Test sources | Go test programs | `testdata/src/<package>/main.go` |
 | E2E tests | Decompile pipeline tests | `e2e/decompile/<package>/<package>_test.go` |
@@ -39,20 +40,29 @@ produces non-empty results.
 
 ## Pattern Structure
 
-Each stdlib pattern follows the CALL-matching approach:
-- A `CALL` instruction that matches by symbol name in the disassembled GoSyntax
-- Multi-instruction patterns include register setup before the CALL for higher
-  confidence matching
-- Single-CALL patterns (in the fallback module) match only by symbol name
-- An optional `gen` block describing the recovered Go source
+Each pattern follows CALL or multi-instruction matching:
+- **CALL-based patterns**: A `CALL` instruction matched by symbol name via fuzzy matching against the disassembled GoSyntax
+- **Multi-instruction patterns**: Register setup + CALL sequences for higher confidence matching
+- **Control flow patterns**: TEST/CMP + conditional jump sequences for if/else and nil checks
+- **Idiom patterns**: Single CALL for common Go constructs (defer, goroutines, channels, maps)
+- An `instr match` block describing the instruction sequence
+- A `gen` block with Go source code output (supports balanced nested braces)
 - An optional `bind` block for variable renaming
 
-Symbol names in Go compiled binaries follow Go syntax:
+Symbol names in the pattern language use underscores as word separators:
 - Package functions: `package.Function` → pattern: `CALL package_Function`
-- Pointer receiver methods: `package.(*Type).Method` → pattern: `CALL package___Type__Method`
-- Value receiver methods: `package.Type.Method` → pattern: `CALL package_Type_Method`
+- Receiver methods: `package.(*Type).Method` → pattern: `CALL package_Type_Method`
+- Runtime internals: `runtime.mapassign_faststr` → pattern: `CALL runtime_mapassign_faststr`
 
-The fuzzy matcher normalizes underscores to periods, lowercases, and does prefix matching, so patterns like `sync_Mutex_Lock` match against `CALL sync.(*Mutex).lockSlow(SB)`.
+The fuzzy matcher normalizes dots, parens, slashes, stars, AND underscores to spaces, lowercases, and does prefix matching. So patterns like `sync_Mutex_Lock` match against `CALL sync.(*Mutex).lockSlow(SB)` and `runtime_mapassign_faststr` matches `CALL runtime.mapassign_faststr(SB)`.
+
+All four modules are embedded via `//go:embed` and loaded independently:
+```go
+golang.LoadStdlib(db)       // always loaded
+golang.LoadRuntime(db)      // always loaded
+golang.LoadFallback(db)     // always loaded
+golang.LoadControlFlow(db)  // always loaded
+```
 
 ## Package Coverage Status
 
@@ -133,8 +143,8 @@ All documented packages are fully implemented with patterns, testdata programs, 
 ## Summary
 
 All Go standard library packages documented in this plan are fully implemented with:
-- Pattern definitions (`.hexpat` files) — 550+ per-function files across stdlib (437), runtime (87), and fallback (26) modules
+- Pattern definitions (`.hexpat` files) — 668 patterns across stdlib (437), runtime (87), fallback (26), and controlflow (118) modules
 - Test source programs (`main.go`)
 - End-to-end decompile tests (compile → disassemble → match → generate → verify)
 
-Total: **50+ packages** with **550+ patterns** across stdlib, runtime, and fallback modules, all with automated E2E tests.
+Total: **50+ packages** with **668 patterns** across four modules, all with automated E2E tests.

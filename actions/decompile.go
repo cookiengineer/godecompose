@@ -20,27 +20,47 @@ func DecompileBinary(b binary.Binary, db *database.Database) (*DecompileOutput, 
 		return nil, fmt.Errorf("no .text section found")
 	}
 
+	fmt.Fprintf(os.Stderr, "[1/5] disassembling...\n")
 	symLookup := buildSymLookup(b)
 	instructions, err := disasm.DecodeStreamWithSymbols(textSection.Data, textSection.Address, symLookup)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "disassembly error: %v\n", err)
 	}
 
+	fmt.Fprintf(os.Stderr, "[2/5] recovering functions...\n")
 	result, err := function.RecoverFromBinary(b, instructions)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "function recovery: %v\n", err)
 	}
 
+	fmt.Fprintf(os.Stderr, "[3/5] filtering user instructions (%d functions)...\n", len(result.UserFunctions))
+
 	var userInstructions []disasm.Instruction
+
+	addrToIdx := make(map[uint64]int, len(instructions))
+	for i, inst := range instructions {
+		addrToIdx[inst.Address] = i
+	}
+
+	visited := make(map[uint64]bool)
 	for _, f := range result.UserFunctions {
-		for _, inst := range instructions {
-			if inst.Address >= f.EntryPoint && inst.Address < f.EndAddr {
-				userInstructions = append(userInstructions, inst)
+		for addr := f.EntryPoint; addr < f.EndAddr; {
+			if idx, ok := addrToIdx[addr]; ok {
+				inst := instructions[idx]
+				if !visited[inst.Address] {
+					userInstructions = append(userInstructions, inst)
+					visited[inst.Address] = true
+				}
+				addr += uint64(inst.Size)
+			} else {
+				addr++
 			}
 		}
 	}
 
 	patterns := db.FindPatterns(b.Architecture(), platformFromBinary(b))
+
+	fmt.Fprintf(os.Stderr, "[4/5] pattern matching (%d instructions, %d patterns)...\n", len(userInstructions), len(db.AllPatterns()))
 
 	m := matcher.New(patterns)
 	matches := m.Match(userInstructions)

@@ -115,7 +115,7 @@ Uses `golang.org/x/arch/x86/x86asm` for pure-Go x86_64 instruction decoding.
 type Instruction struct {
     Address       uint64
     Bytes         []byte
-    Opcode        string       // e.g., "MOV", "CALL", "JMP"
+    Opcode        string       // Plan 9 syntax: "MOVQ", "CALL", "JEQ", "JGT", "JLT"
     IntelSyntax   string       // Intel syntax: "mov rax, rbx"
     GoSyntax      string       // Plan 9 syntax: "MOVQ BX, AX"
     IsCall        bool
@@ -126,6 +126,8 @@ type Instruction struct {
     Size          int
 }
 ```
+
+**Opcode extraction**: `extractOpcode()` derives Plan 9 opcodes from the `GoSyntax` string (first token). Condition codes are mapped to Go Plan 9 convention (JE→JEQ, JG→JGT, JL→JLT, JB→JLO, JA→JHI, JBE→JLS, etc.). TEST and CMP opcodes normalize across operand-size variants (TESTQ/TESTL/TESTB → TEST, CMPQ/CMPL/CMPB → CMP). REP prefix opcodes extract the underlying instruction (REP; MOVSQ → MOVSQ).
 
 **Symbol resolution**: `DecodeStreamWithSymbols(data, baseAddr, lookup)` passes a `SymLookup` function to `x86asm.GoSyntax()`. This resolves PC-relative CALL targets to symbol names:
 
@@ -212,8 +214,11 @@ Implements an ImHex-compatible pattern language with decompilation extensions.
 
 **Evaluator**: Tree-walking interpreter. Produces `CompiledPattern` structures:
 - Instruction sequences compiled from `instr` blocks
-- Gen templates with variable substitution markers
-- Binding tables mapping capture variables to aliases
+- Gen template expansion with `$variable` → alias substitution via bindings
+- Gen block brace balancing: nested `{`/`}` tracked by depth for Go-style gen output
+- `@if`/`@for` for compile-time template conditionals; plain `if`/`for` emitted as literal text
+- GenLoop evaluation: repeats gen body based on loop condition
+- Whitespace insertion between adjacent gen statements for readable output
 
 ### 5. Pattern Matcher (`pattern/matcher/`)
 
@@ -223,19 +228,23 @@ Implements an ImHex-compatible pattern language with decompilation extensions.
 
 1. **Exact substring**: Check if the GoSyntax contains the pattern's expected function name
 2. **Case-insensitive**: Lowercase both the GoSyntax and the expected name
-3. **Prefix matching**: Normalize separators (`.`, `(`, `)`, `/`, `*` → space), split into words, match each target word as a prefix against GoSyntax words
+3. **Prefix matching**: Normalize separators (`.`, `(`, `)`, `/`, `*`, `_` → space), split into words, match each target word as a prefix against GoSyntax words
 
 This handles Go's symbol name variations:
 ```
 Pattern:  sync_Mutex_Lock  → target "sync.Mutex.Lock"
 GoSyntax: CALL sync.(*Mutex).lockSlow(SB)  → normalizes to "call sync mutex lockslow sb"
 Target:   "sync mutex lock"  → each word found as prefix → MATCH
+
+Pattern:  runtime_chansend1  → target "runtime.chansend1"
+GoSyntax: CALL runtime.chansend1(SB)  → normalizes to "call runtime chansend1 sb"
+Target:   "runtime chansend1"  → MATCH (underscores split into separate words)
 ```
 
-**Operand matching**: `matchOperands()` compares pattern operand constraints against disassembled instruction operands. Supports:
+**Operand matching**: `matchOperands()` compares pattern operand constraints against disassembled instruction operands (Intel syntax). Supports:
 - Wildcard (`_`): matches anything
 - Immediate (`$imm`): matches immediate values
-- Register (`RAX`, `X0`): exact register match
+- Register (`RAX`, `X0`): case-insensitive exact register match
 - Capture variable (`src`): captures the matched operand value
 
 **Conflict resolution**: Matches are sorted by confidence (longer, more specific patterns score higher). Overlapping matches are resolved by preferring the highest-confidence match.
@@ -333,7 +342,9 @@ godecompose/
 │   ├── pe/               # PE/COFF binary parser
 │   └── macho/            # Mach-O binary parser
 ├── cmd/godecompose/      # CLI entry point
-├── database/             # Pattern database + syscall tables
+├── database/             # Pattern database + syscall tables (JSON)
+│   └── syscall/          # syscalls
+│       └── tables/       # syscall tables (JSON)
 ├── disasm/               # x86_64 disassembler + Go Plan 9 asm
 ├── docs/                 # Documentation
 ├── e2e/
@@ -346,11 +357,13 @@ godecompose/
 ├── function/             # Function recovery (pclntab, classification, callgraph, structs)
 ├── goutil/               # Go compilation test utilities
 ├── pattern/              # Pattern language engine (lang/, matcher/, generate/)
-├── patterns/             # Pattern files (.hexpat) and syscall tables (JSON)
-│   └── libs/golang/
-│       ├── stdlib/       # Go stdlib patterns (one subdir per package)
-│       ├── runtime/      # Go runtime patterns
-│       └── highlevel/    # Single-CALL high-level patterns
+├── patterns/             # Pattern files (.hexpat)
+│   ├── golang/
+│   │   ├── stdlib/       # Go stdlib patterns (one subdir per package)
+│   │   ├── runtime/      # Go runtime patterns
+│   │   ├── fallback/     # Single-CALL high-level patterns
+│   │   ├── controlflow/  # Control flow, idioms, data types, stdlib calls
+│   │   └── embed.go      # //go:embed all four modules
 ├── testdata/src/         # Test Go source programs (one subdir per package)
 ├── types/                # Arch/Platform enums
 ├── go.mod

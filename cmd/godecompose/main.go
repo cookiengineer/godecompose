@@ -144,6 +144,12 @@ func loadDatabase() *database.Database {
 	if err := golang.LoadRuntime(db); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: loading runtime patterns: %v\n", err)
 	}
+	if err := golang.LoadFallback(db); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: loading fallback patterns: %v\n", err)
+	}
+	if err := golang.LoadControlFlow(db); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: loading controlflow patterns: %v\n", err)
+	}
 	if err := db.LoadSyscallsFromFS(syscall.TablesFS); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: loading syscall tables: %v\n", err)
 	}

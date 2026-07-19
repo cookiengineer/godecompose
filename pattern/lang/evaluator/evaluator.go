@@ -293,10 +293,34 @@ func (e *Evaluator) evalPattern(pat *ast.PatternDefinition) error {
 
 func (e *Evaluator) evalGenBlock(block *ast.GenBlock, bindings []CompiledBinding) string {
 	var buf strings.Builder
+	var prevWasExpr bool
 	for _, stmt := range block.Statements {
-		buf.WriteString(e.evalGenStmt(stmt, bindings))
+		isExpr := false
+		switch stmt.(type) {
+		case *ast.GenExpr:
+			isExpr = true
+		}
+		s := e.evalGenStmt(stmt, bindings)
+		if len(s) == 0 {
+			continue
+		}
+		if prevWasExpr && !isExpr && !isPunctOrSpace(s[0]) {
+			buf.WriteByte(' ')
+		}
+		if !prevWasExpr && isExpr && buf.Len() > 0 {
+			last := buf.String()[buf.Len()-1]
+			if !isPunctOrSpace(last) {
+				buf.WriteByte(' ')
+			}
+		}
+		buf.WriteString(s)
+		prevWasExpr = isExpr
 	}
 	return buf.String()
+}
+
+func isPunctOrSpace(b byte) bool {
+	return b == '(' || b == ')' || b == ',' || b == ';' || b == '.' || b == '{' || b == '}' || b == ' ' || b == '\n' || b == '\t'
 }
 
 func (e *Evaluator) evalGenStmt(stmt ast.GenStatement, bindings []CompiledBinding) string {
@@ -311,21 +335,47 @@ func (e *Evaluator) evalGenStmt(stmt ast.GenStatement, bindings []CompiledBindin
 		return val.String()
 	case *ast.GenConditional:
 		cond, err := e.evalExpr(s.Condition)
+		body := s.Body
 		if err != nil || !cond.Bool {
-			for _, st := range s.ElseBody {
-				return e.evalGenStmt(st, bindings)
-			}
-		} else {
+			body = s.ElseBody
+		}
+		var buf strings.Builder
+		for _, st := range body {
+			buf.WriteString(e.evalGenStmt(st, bindings))
+		}
+		return buf.String()
+	case *ast.GenLoop:
+		count, err := e.evalExpr(s.Cond)
+		if err != nil {
+			return ""
+		}
+		n := int(count.Int)
+		if n < 0 {
+			n = 0
+		}
+		if n > 1000 {
+			n = 1000
+		}
+		var buf strings.Builder
+		for i := 0; i < n; i++ {
 			for _, st := range s.Body {
-				return e.evalGenStmt(st, bindings)
+				buf.WriteString(e.evalGenStmt(st, bindings))
 			}
 		}
-		return ""
+		return buf.String()
 	}
 	return ""
 }
 
 func (e *Evaluator) evalGenExpr(expr ast.Expression, bindings []CompiledBinding) (Value, error) {
+	if ident, ok := expr.(*ast.Identifier); ok {
+		for _, b := range bindings {
+			if b.CaptureVar == ident.Name {
+				return stringValue(b.Alias), nil
+			}
+		}
+		return stringValue(ident.Name), nil
+	}
 	if unary, ok := expr.(*ast.UnaryExpression); ok && unary.Operator == "$" {
 		if ident, ok := unary.Right.(*ast.Identifier); ok {
 			for _, b := range bindings {
