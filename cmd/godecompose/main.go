@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/cookiengineer/godecompose/actions"
 	"github.com/cookiengineer/godecompose/binary"
@@ -37,9 +36,9 @@ func main() {
 		defer b.Close()
 		actions.Info(b)
 
-	case "disasm":
+	case "disassemble":
 		if len(args) < 1 {
-			fmt.Println("usage: godecompose disasm <binary>")
+			fmt.Println("usage: godecompose disassemble <binary>")
 			os.Exit(1)
 		}
 		b := openBinary(args[0])
@@ -47,17 +46,13 @@ func main() {
 		actions.Disassemble(b)
 
 	case "decompile":
-		if len(args) < 1 {
-			fmt.Println("usage: godecompose decompile <binary> [--output=<dir>]")
+		if len(args) < 2 {
+			printUsage()
 			os.Exit(1)
 		}
-		binaryPath := args[0]
-		outputDir := ""
-		for _, arg := range args[1:] {
-			if strings.HasPrefix(arg, "--output=") {
-				outputDir = arg[9:]
-			}
-		}
+		namespace := args[0]
+		binaryPath := args[1]
+		outputDir := namespace
 
 		b := openBinary(binaryPath)
 		defer b.Close()
@@ -78,15 +73,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "  %s (%d functions)\n", pkg, len(output.FuncResult.Packages[pkg]))
 		}
 
-		if outputDir != "" {
-			if err := actions.WriteProject(output, outputDir); err != nil {
-				fmt.Fprintf(os.Stderr, "write project: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Fprintf(os.Stderr, "\nProject written to: %s\n", outputDir)
-		} else {
-			fmt.Print(output.GeneratedSource)
+		if err := actions.WriteProject(output, outputDir); err != nil {
+			fmt.Fprintf(os.Stderr, "write project: %v\n", err)
+			os.Exit(1)
 		}
+		fmt.Fprintf(os.Stderr, "\nProject written to: %s\n", outputDir)
 
 	case "patterns":
 		if len(args) < 1 {
@@ -122,11 +113,17 @@ func printUsage() {
 	fmt.Println(`godecompose — pattern-based decompiler for x86_64 binaries
 
 Usage:
-  godecompose info <binary>               Show binary metadata
-  godecompose disasm <binary>             Disassemble binary
-  godecompose decompile <binary>          Full decompilation pipeline
-  godecompose patterns list               List available patterns
-  godecompose patterns validate <file>    Validate a pattern file`)
+  godecompose info <binary>                   Show binary metadata
+  godecompose disassemble <binary>            Disassemble binary
+  godecompose decompile <namespace> <binary>  Decompile binary into namespace folder
+  godecompose patterns list                   List available patterns
+  godecompose patterns validate <file>        Validate a pattern file
+
+Examples:
+  godecompose info ./myapp
+  godecompose disassemble ./myapp
+  godecompose decompile myproject ./myapp
+  godecompose patterns list`)
 }
 
 func openBinary(path string) binary.Binary {
