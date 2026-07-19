@@ -227,6 +227,9 @@ func matchOperands(inst disasm.Instruction, patternOps []evaluator.CompiledOpera
 
 	intel := inst.IntelSyntax
 	parts := operandParts(intel)
+	if len(parts) > 0 {
+		parts = parts[1:]
+	}
 
 	pi := 0
 	for _, part := range parts {

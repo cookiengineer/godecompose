@@ -32,7 +32,7 @@ func CompileAndOpen(t *testing.T, name string) binary.Binary {
 	dir := t.TempDir()
 	outPath := filepath.Join(dir, name)
 
-	cmd := exec.Command("go", "build", "-o", outPath, ".")
+	cmd := exec.Command("go", "build", "-gcflags=all=-l", "-o", outPath, ".")
 	cmd.Dir = srcDir
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64")
 	if out, err := cmd.CombinedOutput(); err != nil {

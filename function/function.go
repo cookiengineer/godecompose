@@ -82,52 +82,98 @@ type StructType struct {
 //
 //	main.main              -> pkg=main, func=main
 //	main.greet             -> pkg=main, func=greet
+//	main.cmdInit.func3     -> pkg=main, func=cmdInit.func3 (closure)
 //	main.Type.Method       -> pkg=main, receiver=Type, method=Method
 //	main.(*Type).Method    -> pkg=main, receiver=Type, pointer, method=Method
 //	main.(Type).Method     -> pkg=main, receiver=Type, method=Method
 //	example.com/pkg.Func   -> pkg=example.com/pkg, func=Func
 //	example.com/pkg.T.M    -> pkg=example.com/pkg, receiver=T, method=M
+//	example.com/pkg.(*T).M -> pkg=example.com/pkg, receiver=T, pointer, method=M
 func ParsePackageName(fullName string) (pkgPath string, shortName string, receiverType string, isPointerReceiver bool, isMethod bool) {
 	if fullName == "" {
 		return "", "", "", false, false
 	}
 
-	lastDot := strings.LastIndex(fullName, ".")
-	if lastDot < 0 {
-		return "", fullName, "", false, false
+	rest := fullName
+
+	if strings.HasPrefix(rest, "main.") {
+		pkgPath = "main"
+		rest = rest[5:]
+	} else {
+		receiverDot := strings.Index(rest, ".(")
+		if receiverDot >= 0 {
+			pkgPath = rest[:receiverDot]
+			rest = rest[receiverDot+1:]
+		} else {
+			lastDot := strings.LastIndex(rest, ".")
+			if lastDot < 0 {
+				return "", rest, "", false, false
+			}
+			pkgPath = rest[:lastDot]
+			rest = rest[lastDot+1:]
+		}
 	}
 
-	pkgPath = fullName[:lastDot]
-	funcName := fullName[lastDot+1:]
-
-	// Remove ABI suffixes like .abi0
-	if strings.HasSuffix(funcName, ".abi0") {
-		funcName = funcName[:len(funcName)-5]
+	if strings.HasSuffix(rest, ".abi0") {
+		rest = rest[:len(rest)-5]
 	}
 
-	// Method with pointer/value receiver: (*Type).Method or (Type).Method
-	if strings.HasPrefix(funcName, "(") {
-		closing := strings.IndexByte(funcName, ')')
-		if closing > 1 && closing+1 < len(funcName) && funcName[closing+1] == '.' {
-			receiverStr := funcName[1:closing]
+	if strings.HasPrefix(rest, "(") {
+		closing := strings.IndexByte(rest, ')')
+		if closing > 1 && closing+1 < len(rest) && rest[closing+1] == '.' {
+			receiverStr := rest[1:closing]
 			isPointerReceiver = strings.HasPrefix(receiverStr, "*")
 			receiverType = strings.TrimPrefix(receiverStr, "*")
-			shortName = funcName[closing+2:]
+			shortName = rest[closing+2:]
 			isMethod = true
 			return
 		}
 	}
 
-	// Method without parens: Type.Method
-	if funcDot := strings.IndexByte(funcName, '.'); funcDot > 0 {
-		receiverType = funcName[:funcDot]
-		shortName = funcName[funcDot+1:]
-		isMethod = true
-		return
+	if pkgPath != "main" {
+		if funcDot := strings.IndexByte(rest, '.'); funcDot > 0 {
+			receiverType = rest[:funcDot]
+			shortName = rest[funcDot+1:]
+			isMethod = true
+			return
+		}
 	}
 
-	shortName = funcName
+	if pkgPath != "main" {
+		if funcDot := strings.IndexByte(rest, '.'); funcDot > 0 {
+			receiverType = rest[:funcDot]
+			shortName = rest[funcDot+1:]
+			isMethod = true
+			return
+		}
+	} else {
+		dots := 0
+		for _, ch := range rest {
+			if ch == '.' {
+				dots++
+			}
+		}
+		if dots == 1 {
+			funcDot := strings.IndexByte(rest, '.')
+			candidate := rest[funcDot+1:]
+			if !isClosureName(candidate) {
+				receiverType = rest[:funcDot]
+				shortName = candidate
+				isMethod = true
+				return
+			}
+		}
+	}
+
+	shortName = rest
 	return
+}
+
+// isClosureName returns true if the name looks like a Go closure
+// (e.g., "func1", "func2", "func3", "func1.1", "func2.1").
+func isClosureName(name string) bool {
+	return strings.HasPrefix(name, "func") && len(name) > 4 &&
+		(name[4] >= '0' && name[4] <= '9')
 }
 
 // SetPackageInfo parses the function name and sets PackagePath, ShortName,

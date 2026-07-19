@@ -147,4 +147,4 @@ All Go standard library packages documented in this plan are fully implemented w
 - Test source programs (`main.go`)
 - End-to-end decompile tests (compile → disassemble → match → generate → verify)
 
-Total: **50+ packages** with **686 patterns** across four modules (stdlib 437, runtime 87, fallback 26, controlflow 118 + 18 data), all with automated E2E tests.
+Total: **50+ packages** with **709 patterns** across four modules (stdlib 437, runtime 87, fallback 26, controlflow 159), all with automated E2E tests.
