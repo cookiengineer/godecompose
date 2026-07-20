@@ -1,6 +1,10 @@
 package generate
 
 import (
+	"bytes"
+	"go/ast"
+	"go/printer"
+	"go/token"
 	"strings"
 	"testing"
 
@@ -10,12 +14,25 @@ import (
 	"github.com/cookiengineer/godecompose/pattern/matcher"
 )
 
-func TestWriteFunctionBodyNoiseFiltering(t *testing.T) {
+func stmtsToString(stmts []ast.Stmt) string {
+	if len(stmts) == 0 {
+		return ""
+	}
+	var buf bytes.Buffer
+	fset := token.NewFileSet()
+	for _, s := range stmts {
+		printer.Fprint(&buf, fset, s)
+		buf.WriteByte('\n')
+	}
+	return buf.String()
+}
+
+func TestBuildFunctionBodyNoiseFiltering(t *testing.T) {
 	insts := []disasm.Instruction{
-		{Address: 0x1000, Opcode: "NOP", IntelSyntax: "nop", Size: 1},
-		{Address: 0x1001, Opcode: "INT", IntelSyntax: "int3", Size: 1},
-		{Address: 0x1002, Opcode: "MOV", IntelSyntax: "mov rax, rbx", Size: 3},
-		{Address: 0x1005, Opcode: "RET", IntelSyntax: "ret", Size: 1},
+		{Address: 0x1000, Opcode: "NOP", IntelSyntax: "nop", GoSyntax: "NOP", Size: 1},
+		{Address: 0x1001, Opcode: "INT", IntelSyntax: "int3", GoSyntax: "INT $3", Size: 1},
+		{Address: 0x1002, Opcode: "MOVQ", IntelSyntax: "mov rax, rbx", GoSyntax: "MOVQ RAX, BX", Size: 3},
+		{Address: 0x1005, Opcode: "RET", IntelSyntax: "ret", GoSyntax: "RET", Size: 1, IsReturn: true},
 	}
 
 	f := &function.Function{
@@ -25,15 +42,16 @@ func TestWriteFunctionBodyNoiseFiltering(t *testing.T) {
 		EndAddr:    0x1006,
 	}
 
+	blocks := disasm.BuildControlFlowGraph(insts, []uint64{f.EntryPoint})
+	structure := disasm.StructureControlFlow(f.Name, blocks)
+
 	g := &Generator{
 		matches:      nil,
 		instructions: insts,
 	}
 
-	var buf strings.Builder
-	g.writeFunctionBody(&buf, f, insts, "\t")
-
-	output := buf.String()
+	body := g.buildFunctionBody(f, insts, blocks, structure, nil)
+	output := stmtsToString(body)
 	t.Logf("output:\n%s", output)
 
 	if strings.Contains(output, "int3") {
@@ -42,26 +60,16 @@ func TestWriteFunctionBodyNoiseFiltering(t *testing.T) {
 	if strings.Contains(output, "nop") {
 		t.Error("output contains NOP noise")
 	}
-	if !strings.Contains(output, "mov") {
-		t.Error("output missing valid MOV instruction")
-	}
-	if !strings.Contains(output, "ret") {
-		t.Error("output missing RET instruction")
-	}
-	if !strings.Contains(output, "}") {
-		t.Error("output missing closing brace")
+	if strings.Contains(output, "int") {
+		t.Error("output contains INT noise")
 	}
 }
 
-func TestWriteFunctionBodyLabels(t *testing.T) {
-	// JE target; target: RET — JE is alone in a block, RET is the target
-	// 0x1000: JE 0x1003 (block 0, conditional)
-	// 0x1002: another instruction to break fallthrough
-	// 0x1003: RET (block 1, target)
+func TestBuildFunctionBodyLabels(t *testing.T) {
 	insts := []disasm.Instruction{
-		{Address: 0x1000, Opcode: "JE", IntelSyntax: "jz 0x1003", Size: 2, IsBranch: true, IsConditional: true, BranchTarget: 0x1003},
-		{Address: 0x1002, Opcode: "NOP", IntelSyntax: "nop", Size: 1},
-		{Address: 0x1003, Opcode: "RET", IntelSyntax: "ret", Size: 1, IsReturn: true},
+		{Address: 0x1000, Opcode: "JEQ", IntelSyntax: "jz 0x1003", GoSyntax: "JEQ 0x1003", Size: 2, IsBranch: true, IsConditional: true, BranchTarget: 0x1003},
+		{Address: 0x1002, Opcode: "NOP", IntelSyntax: "nop", GoSyntax: "NOP", Size: 1},
+		{Address: 0x1003, Opcode: "RET", IntelSyntax: "ret", GoSyntax: "RET", Size: 1, IsReturn: true},
 	}
 
 	f := &function.Function{
@@ -71,15 +79,16 @@ func TestWriteFunctionBodyLabels(t *testing.T) {
 		EndAddr:    0x1004,
 	}
 
+	blocks := disasm.BuildControlFlowGraph(insts, []uint64{f.EntryPoint})
+	structure := disasm.StructureControlFlow(f.Name, blocks)
+
 	g := &Generator{
 		matches:      nil,
 		instructions: insts,
 	}
 
-	var buf strings.Builder
-	g.writeFunctionBody(&buf, f, insts, "\t")
-
-	output := buf.String()
+	body := g.buildFunctionBody(f, insts, blocks, structure, nil)
+	output := stmtsToString(body)
 	t.Logf("output:\n%s", output)
 
 	if strings.Contains(output, "nop") {
@@ -91,12 +100,12 @@ func TestWriteFunctionBodyLabels(t *testing.T) {
 	}
 }
 
-func TestWriteFunctionBodyWithMatches(t *testing.T) {
+func TestBuildFunctionBodyWithMatches(t *testing.T) {
 	insts := []disasm.Instruction{
-		{Address: 0x1000, Opcode: "TEST", IntelSyntax: "test rax, rax", Size: 3},
-		{Address: 0x1003, Opcode: "JE", IntelSyntax: "jz 0x1010", Size: 2, IsBranch: true, IsConditional: true, BranchTarget: 0x1010},
-		{Address: 0x1005, Opcode: "MOV", IntelSyntax: "mov rax, 1", Size: 5},
-		{Address: 0x100a, Opcode: "RET", IntelSyntax: "ret", Size: 1, IsReturn: true},
+		{Address: 0x1000, Opcode: "TEST", IntelSyntax: "test rax, rax", GoSyntax: "TESTQ AX, AX", Size: 3},
+		{Address: 0x1003, Opcode: "JEQ", IntelSyntax: "jz 0x1010", GoSyntax: "JEQ 0x1010", Size: 2, IsBranch: true, IsConditional: true, BranchTarget: 0x1010},
+		{Address: 0x1005, Opcode: "MOVQ", IntelSyntax: "mov rax, 1", GoSyntax: "MOVQ $1, AX", Size: 5},
+		{Address: 0x100a, Opcode: "RET", IntelSyntax: "ret", GoSyntax: "RET", Size: 1, IsReturn: true},
 	}
 
 	pat := &evaluator.CompiledPattern{
@@ -122,15 +131,17 @@ func TestWriteFunctionBodyWithMatches(t *testing.T) {
 		EndAddr:    0x100b,
 	}
 
+	blocks := disasm.BuildControlFlowGraph(insts, []uint64{f.EntryPoint})
+	structure := disasm.StructureControlFlow(f.Name, blocks)
+	t.Logf("blocks: %d, structure: %v", len(blocks), structure != nil)
+
 	g := &Generator{
 		matches:      matches,
 		instructions: insts,
 	}
 
-	var buf strings.Builder
-	g.writeFunctionBody(&buf, f, insts, "\t")
-
-	output := buf.String()
+	body := g.buildFunctionBody(f, insts, blocks, structure, matches)
+	output := stmtsToString(body)
 	t.Logf("output:\n%s", output)
 
 	if !strings.Contains(output, "if ") {

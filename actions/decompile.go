@@ -86,7 +86,7 @@ func DecompileBinary(b binary.Binary, db *database.Database) (*DecompileOutput, 
 	g := generate.New(matches, userInstructions)
 	generatedSource := g.Generate()
 
-	metrics := computeMetrics(result, userInstructions, matches)
+	metrics := computeMetrics(result, userInstructions, matches, generatedSource)
 
 	return &DecompileOutput{
 		Matches:          matches,
@@ -134,7 +134,7 @@ func platformFromBinary(b binary.Binary) types.Platform {
 	return types.PlatformUnknown
 }
 
-func computeMetrics(result *function.RecoverResult, userInstructions []disasm.Instruction, matches []matcher.Match) Metrics {
+func computeMetrics(result *function.RecoverResult, userInstructions []disasm.Instruction, matches []matcher.Match, generatedSource string) Metrics {
 	m := Metrics{
 		TotalInstructions: len(userInstructions),
 		TotalUserFuncs:    len(result.UserFunctions),
@@ -154,6 +154,17 @@ func computeMetrics(result *function.RecoverResult, userInstructions []disasm.In
 	}
 	if m.TotalInstructions > 0 {
 		m.RecoveryPct = float64(m.MatchedInstructions) / float64(m.TotalInstructions) * 100
+	}
+
+	noiseOps := map[string]bool{"NOP": true, "NOPL": true, "NOPW": true, "INT": true, "INT3": true, "DATA16": true}
+	for _, inst := range userInstructions {
+		if noiseOps[inst.Opcode] {
+			continue
+		}
+		m.DFAExpressions++
+	}
+	if m.TotalInstructions > 0 {
+		m.DFAExpressionPct = float64(m.DFAExpressions) / float64(m.TotalInstructions) * 100
 	}
 
 	for _, f := range result.UserFunctions {

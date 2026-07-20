@@ -147,3 +147,26 @@ func FilterMatchesByPackage(matches []matcher.Match, pkgPrefix string) []matcher
 	}
 	return out
 }
+
+// WriteToDir runs the full decompile pipeline and writes project output to a temp dir.
+func WriteToDir(t *testing.T, b binary.Binary, db *database.Database) (string, *function.RecoverResult) {
+	t.Helper()
+
+	output, err := actions.DecompileBinary(b, db)
+	if err != nil {
+		t.Fatalf("DecompileBinary: %v", err)
+	}
+
+	dir := t.TempDir()
+	if err := actions.WriteProject(output, dir); err != nil {
+		t.Fatalf("WriteProject: %v", err)
+	}
+
+	t.Logf("written to: %s", dir)
+	t.Logf("functions: %d total (user: %d)", len(output.FuncResult.Functions), len(output.FuncResult.UserFunctions))
+	t.Logf("packages: %d", len(output.FuncResult.Packages))
+	t.Logf("structs: %d", len(output.FuncResult.Structs))
+	t.Logf("match count: %d", len(output.Matches))
+
+	return dir, output.FuncResult
+}

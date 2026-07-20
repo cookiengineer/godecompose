@@ -276,9 +276,10 @@ func (e *Evaluator) evalPattern(pat *ast.PatternDefinition) error {
 
 	if pat.BindBlock != nil {
 		for _, b := range pat.BindBlock.Bindings {
+			alias := sanitizeGoIdent(b.Alias)
 			cp.Bindings = append(cp.Bindings, CompiledBinding{
 				CaptureVar: b.CaptureVar,
-				Alias:      b.Alias,
+				Alias:      alias,
 			})
 		}
 	}
@@ -304,12 +305,18 @@ func (e *Evaluator) evalGenBlock(block *ast.GenBlock, bindings []CompiledBinding
 		if len(s) == 0 {
 			continue
 		}
-		if prevWasExpr && !isExpr && !isPunctOrSpace(s[0]) {
+		if prevWasExpr && !isExpr && !isLeadingPunct(s[0]) {
 			buf.WriteByte(' ')
 		}
 		if !prevWasExpr && isExpr && buf.Len() > 0 {
 			last := buf.String()[buf.Len()-1]
-			if !isPunctOrSpace(last) {
+			if !isTrailingPunct(last) {
+				buf.WriteByte(' ')
+			}
+		}
+		if !prevWasExpr && !isExpr && buf.Len() > 0 {
+			last := buf.String()[buf.Len()-1]
+			if !isTrailingPunct(last) && !isLeadingPunct(s[0]) {
 				buf.WriteByte(' ')
 			}
 		}
@@ -319,8 +326,12 @@ func (e *Evaluator) evalGenBlock(block *ast.GenBlock, bindings []CompiledBinding
 	return buf.String()
 }
 
-func isPunctOrSpace(b byte) bool {
-	return b == '(' || b == ')' || b == ',' || b == ';' || b == '.' || b == '{' || b == '}' || b == ' ' || b == '\n' || b == '\t'
+func isLeadingPunct(b byte) bool {
+	return b == '(' || b == ')' || b == ',' || b == ';' || b == '.' || b == ' ' || b == '\n' || b == '\t'
+}
+
+func isTrailingPunct(b byte) bool {
+	return b == '(' || b == '.' || b == ' ' || b == '\n' || b == '\t'
 }
 
 func (e *Evaluator) evalGenStmt(stmt ast.GenStatement, bindings []CompiledBinding) string {
@@ -550,4 +561,19 @@ func (e *Evaluator) registerBuiltins() {
 		}
 		return nullValue(), nil
 	}
+}
+
+var goKeywords = map[string]bool{
+	"break": true, "case": true, "chan": true, "const": true, "continue": true,
+	"default": true, "defer": true, "else": true, "fallthrough": true, "for": true,
+	"func": true, "go": true, "goto": true, "if": true, "import": true,
+	"interface": true, "map": true, "package": true, "range": true, "return": true,
+	"select": true, "struct": true, "switch": true, "type": true, "var": true,
+}
+
+func sanitizeGoIdent(s string) string {
+	if goKeywords[s] {
+		return "_" + s
+	}
+	return s
 }

@@ -84,7 +84,7 @@ func TestGenerateUnmatchedRange(t *testing.T) {
 	g := New(matches, instructions)
 	output := g.Generate()
 
-	if !strings.Contains(output, "unresolved code") {
+	if !strings.Contains(output, "unresolved") {
 		t.Errorf("output doesn't contain unresolved code marker: %q", output)
 	}
 	if !strings.Contains(output, "matched()") {

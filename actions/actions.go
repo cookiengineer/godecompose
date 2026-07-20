@@ -26,6 +26,8 @@ type Metrics struct {
 	TotalInstructions    int
 	MatchedInstructions  int
 	RecoveryPct          float64
+	DFAExpressions       int
+	DFAExpressionPct     float64
 	TotalUserFuncs       int
 	FuncsWithSignatures  int
 	TotalStructs         int

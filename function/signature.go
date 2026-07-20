@@ -89,7 +89,7 @@ func ReconstructSignature(f *Function) *Signature {
 		if returnWrites[retReg] {
 			p := Param{}
 			if hasErrorReturn && len(sig.Returns) == 0 {
-				p.Type = "error"
+				continue
 			} else if bodyTypes.retType != "" {
 				p.Type = bodyTypes.retType
 			} else if retType := inferReturnFromName(f.ShortName); retType != "" {
@@ -97,6 +97,10 @@ func ReconstructSignature(f *Function) *Signature {
 			}
 			sig.Returns = append(sig.Returns, p)
 		}
+	}
+
+	if hasErrorReturn {
+		sig.Returns = append(sig.Returns, Param{Type: "error"})
 	}
 
 	return sig
@@ -193,15 +197,16 @@ func containsAny(s string, substrs ...string) bool {
 
 func (s *Signature) String() string {
 	var b strings.Builder
+	name := sanitizeFuncName(s.Name)
 
 	if s.IsPointer && s.Receiver != "" {
 		recv := strings.ToLower(s.Receiver[:1])
-		b.WriteString(fmt.Sprintf("func (%s *%s) %s(", recv, s.Receiver, s.Name))
+		b.WriteString(fmt.Sprintf("func (%s *%s) %s(", recv, s.Receiver, name))
 	} else if s.Receiver != "" {
 		recv := strings.ToLower(s.Receiver[:1])
-		b.WriteString(fmt.Sprintf("func (%s %s) %s(", recv, s.Receiver, s.Name))
+		b.WriteString(fmt.Sprintf("func (%s %s) %s(", recv, s.Receiver, name))
 	} else {
-		b.WriteString(fmt.Sprintf("func %s(", s.Name))
+		b.WriteString(fmt.Sprintf("func %s(", name))
 	}
 
 	for i, a := range s.Args {
@@ -211,7 +216,7 @@ func (s *Signature) String() string {
 		if a.Type != "" {
 			b.WriteString(fmt.Sprintf("%s %s", a.Name, a.Type))
 		} else {
-			b.WriteString(a.Name)
+			b.WriteString(fmt.Sprintf("%s interface{}", a.Name))
 		}
 	}
 	b.WriteString(")")
@@ -329,15 +334,23 @@ func InferStructFields(st *StructType) []FieldInfo {
 	if st == nil || len(st.Methods) == 0 {
 		return nil
 	}
+
 	offsets := make(map[string]*FieldInfo)
+	offsetHints := make(map[string]map[string]int)
+
 	for _, m := range st.Methods {
 		if len(m.Blocks) == 0 {
 			continue
 		}
+		hints := extractMethodNameHints(m.ShortName)
 		for _, block := range m.Blocks {
 			for _, inst := range block.Instructions {
-				offset := extractMemOffset(inst.IntelSyntax)
-				if offset == "" || offset == "0" || offset == "0x0" {
+				intel := inst.IntelSyntax
+				if strings.Contains(intel, "rsp") || strings.Contains(intel, "rbp") || strings.Contains(intel, "RSP") || strings.Contains(intel, "RBP") {
+					continue
+				}
+				offset := extractMemOffset(intel)
+				if offset == "" {
 					continue
 				}
 				key := fmt.Sprintf("0x%s", offset)
@@ -349,14 +362,111 @@ func InferStructFields(st *StructType) []FieldInfo {
 					fi.Type = inferFieldTypeFromInst(inst.IntelSyntax)
 					offsets[key] = fi
 				}
+
+				if offsetHints[key] == nil {
+					offsetHints[key] = make(map[string]int)
+				}
+				for _, hint := range hints {
+					offsetHints[key][hint]++
+				}
 			}
 		}
 	}
+
+	for key, fi := range offsets {
+		hints := offsetHints[key]
+		if len(hints) > 0 {
+			best := ""
+			bestCount := 0
+			for hint, count := range hints {
+				if count > bestCount {
+					best = hint
+					bestCount = count
+				}
+			}
+			if best != "" {
+				fi.Name = best
+			}
+		}
+
+		if fi.Type == "" {
+			fi.Type = inferTypeFromOffset(fi.Offset)
+		}
+	}
+
 	result := make([]FieldInfo, 0, len(offsets))
 	for _, fi := range offsets {
 		result = append(result, *fi)
 	}
 	return result
+}
+
+func inferTypeFromOffset(offsetHex string) string {
+	var offset int64
+	fmt.Sscanf(offsetHex, "0x%x", &offset)
+	switch {
+	case offset < 0x08:
+		return ""
+	case offset < 0x20:
+		return "int"
+	case offset < 0x40:
+		return "int"
+	default:
+		return "int"
+	}
+}
+
+var knownRegsSet = map[string]bool{
+	"rax": true, "rbx": true, "rcx": true, "rdx": true,
+	"rsi": true, "rdi": true, "rsp": true, "rbp": true,
+	"r8": true, "r9": true, "r10": true, "r11": true,
+	"r12": true, "r13": true, "r14": true, "r15": true,
+	"eax": true, "ebx": true, "ecx": true, "edx": true,
+	"esi": true, "edi": true, "esp": true, "ebp": true,
+	"ax": true, "bx": true, "cx": true, "dx": true,
+}
+
+func isKnownRegister(s string) bool {
+	return knownRegsSet[strings.ToLower(s)]
+}
+
+func extractMethodNameHints(methodName string) []string {
+	var hints []string
+
+	type prefixRule struct {
+		prefix string
+		suffix string
+	}
+
+	rules := []prefixRule{
+		{"Get", ""},
+		{"Set", ""},
+		{"Is", ""},
+		{"Has", ""},
+		{"Calc", ""},
+		{"Calc", "ulate"},
+	}
+
+	for _, r := range rules {
+		if strings.HasPrefix(methodName, r.prefix) {
+			rest := methodName[len(r.prefix):]
+			if r.suffix != "" {
+				if !strings.HasPrefix(rest, r.suffix) {
+					continue
+				}
+				rest = rest[len(r.suffix):]
+			} else {
+				if len(rest) == 0 || rest[0] < 'A' || rest[0] > 'Z' {
+					continue
+				}
+			}
+			if len(rest) > 0 {
+				hints = append(hints, strings.ToLower(rest))
+			}
+		}
+	}
+
+	return hints
 }
 
 func extractMemOffset(intel string) string {
@@ -379,6 +489,9 @@ func extractMemOffset(intel string) string {
 	} else if minus >= 0 {
 		inner = inner[minus+1:]
 	} else {
+		if isKnownRegister(inner) {
+			return "0"
+		}
 		return ""
 	}
 	inner = strings.TrimSpace(inner)
@@ -389,7 +502,8 @@ func extractMemOffset(intel string) string {
 	if strings.HasPrefix(inner, "0x") {
 		inner = inner[2:]
 	}
-	if inner == "0" {
+
+	if inner == "" {
 		return ""
 	}
 
@@ -407,7 +521,7 @@ func extractMemOffset(intel string) string {
 
 	val := int64(0)
 	fmt.Sscanf(inner, "%x", &val)
-	if val <= 0 || val > 0x200 {
+	if val < 0 || val > 0x200 {
 		return ""
 	}
 
@@ -419,14 +533,41 @@ func inferFieldTypeFromInst(intel string) string {
 	if strings.Contains(lower, "movb") || strings.Contains(lower, "mov byte") || strings.Contains(lower, "cmpb") || strings.Contains(lower, "cmp byte") {
 		return "bool"
 	}
-	if strings.Contains(lower, "convTstring") || strings.Contains(lower, "conv.tstring") {
+	if strings.Contains(lower, "convtstring") || strings.Contains(lower, "conv.tstring") || strings.Contains(lower, "convTstring") {
 		return "string"
 	}
-	if strings.Contains(lower, "convT64") || strings.Contains(lower, "conv.t64") {
+	if strings.Contains(lower, "convt64") || strings.Contains(lower, "conv.t64") || strings.Contains(lower, "convT64") {
 		return "int64"
 	}
 	if strings.Contains(lower, "qword") {
 		return "int"
 	}
 	return ""
+}
+
+var goKeywords = map[string]bool{
+	"break": true, "case": true, "chan": true, "const": true, "continue": true,
+	"default": true, "defer": true, "else": true, "fallthrough": true, "for": true,
+	"func": true, "go": true, "goto": true, "if": true, "import": true,
+	"interface": true, "map": true, "package": true, "range": true, "return": true,
+	"select": true, "struct": true, "switch": true, "type": true, "var": true,
+}
+
+func sanitizeFuncName(name string) string {
+	name = strings.ReplaceAll(name, ".", "_")
+
+	if name == "init" || name == "main_init" {
+		return "_init"
+	}
+
+	parts := strings.Split(name, "_")
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		if goKeywords[p] {
+			parts[i] = "_" + p
+		}
+	}
+	return strings.Join(parts, "_")
 }

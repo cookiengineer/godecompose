@@ -53,13 +53,13 @@ func TestExtractMemOffset(t *testing.T) {
 		{"mov qword ptr [rbx+0x10], rcx", "10"},
 		{"mov qword ptr [rdi+0x28], rsi", "28"},
 		{"mov qword ptr [rsp+0x50], rax", "50"},
-		{"mov qword ptr [rax], rbx", ""},                 // no offset
+		{"mov qword ptr [rax], rbx", "0"},                 // bare register = offset 0
 		{"lea rax, ptr [rip+0x12345]", ""},               // RIP-relative
 		{"mov qword ptr [rax+rbx], rcx", ""},             // register index
 		{"mov qword ptr [rax+0xrbx], rcx", ""},           // non-hex offset
 		{"mov qword ptr [rcx-0x8], rax", "8"},            // negative (but takes absolute)
 		{"mov qword ptr [rax+0x300], rbx", ""},           // too large
-		{"mov qword ptr [rax+0x0], rbx", ""},             // zero offset
+		{"mov qword ptr [rax+0x0], rbx", "0"},             // zero offset is valid
 	}
 	for _, tc := range tests {
 		got := extractMemOffset(tc.intel)
@@ -223,5 +223,170 @@ func TestNameHeuristics(t *testing.T) {
 	}
 	if nameSuggestsError("greet") {
 		t.Error("greet should not suggest error")
+	}
+}
+
+func TestExtractMethodNameHints_Get(t *testing.T) {
+	hints := extractMethodNameHints("GetName")
+	if len(hints) == 0 {
+		t.Fatal("no hints for GetName")
+	}
+	if hints[0] != "name" {
+		t.Errorf("GetName → %q, want \"name\"", hints[0])
+	}
+}
+
+func TestExtractMethodNameHints_Set(t *testing.T) {
+	hints := extractMethodNameHints("SetID")
+	if len(hints) == 0 || hints[0] != "id" {
+		t.Errorf("SetID → %v, want [\"id\"]", hints)
+	}
+}
+
+func TestExtractMethodNameHints_Is(t *testing.T) {
+	hints := extractMethodNameHints("IsDone")
+	if len(hints) == 0 || hints[0] != "done" {
+		t.Errorf("IsDone → %v, want [\"done\"]", hints)
+	}
+}
+
+func TestExtractMethodNameHints_Has(t *testing.T) {
+	hints := extractMethodNameHints("HasError")
+	if len(hints) == 0 || hints[0] != "error" {
+		t.Errorf("HasError → %v, want [\"error\"]", hints)
+	}
+}
+
+func TestExtractMethodNameHints_NoPrefix(t *testing.T) {
+	hints := extractMethodNameHints("processData")
+	if len(hints) > 0 {
+		t.Errorf("processData should have no hints: %v", hints)
+	}
+}
+
+func TestExtractMethodNameHints_Calc(t *testing.T) {
+	hints := extractMethodNameHints("CalculateTotal")
+	if len(hints) == 0 || hints[0] != "total" {
+		t.Errorf("CalculateTotal → %v, want [\"total\"]", hints)
+	}
+}
+
+func TestExtractMethodNameHints_CalcShort(t *testing.T) {
+	hints := extractMethodNameHints("CalcValue")
+	if len(hints) == 0 || hints[0] != "value" {
+		t.Errorf("CalcValue → %v, want [\"value\"]", hints)
+	}
+}
+
+func TestInferStructFields_StackAccessFiltered(t *testing.T) {
+	st := &StructType{
+		Name:        "Filter",
+		PackagePath: "main",
+	}
+
+	blocks := []*disasm.BasicBlock{{
+		StartAddr: 0x1000,
+		EndAddr:   0x1010,
+		Instructions: []disasm.Instruction{
+			{Address: 0x1000, Opcode: "MOVQ", IntelSyntax: "mov qword ptr [rsp+0x8], rax", GoSyntax: "MOVQ AX, 8(SP)", Size: 5},
+			{Address: 0x1005, Opcode: "MOVQ", IntelSyntax: "mov qword ptr [rbp+0x10], rbx", GoSyntax: "MOVQ BX, 16(BP)", Size: 5},
+		},
+	}}
+
+	st.Methods = []*Function{{
+		Name:      "main.(*Filter).process",
+		ShortName: "process",
+		Blocks:    blocks,
+	}}
+
+	fields := InferStructFields(st)
+	for _, f := range fields {
+		if strings.Contains(f.Name, "rsp") || strings.Contains(f.Name, "rbp") {
+			t.Errorf("stack access not filtered: %s offset=%s", f.Name, f.Offset)
+		}
+	}
+}
+
+func TestInferFieldType_Bool(t *testing.T) {
+	typ := inferFieldTypeFromInst("mov byte ptr [rax+0x10], 1")
+	if typ != "bool" {
+		t.Errorf("byte mov should suggest bool, got %q", typ)
+	}
+}
+
+func TestInferFieldType_Int(t *testing.T) {
+	typ := inferFieldTypeFromInst("mov qword ptr [rax+0x10], rbx")
+	if typ != "int" {
+		t.Errorf("qword mov should suggest int, got %q", typ)
+	}
+}
+
+func TestInferFieldType_String(t *testing.T) {
+	typ := inferFieldTypeFromInst("call runtime.convtstring")
+	if typ != "string" {
+		t.Errorf("convTstring should suggest string, got %q", typ)
+	}
+}
+
+func TestInferFieldType_Int64(t *testing.T) {
+	typ := inferFieldTypeFromInst("call runtime.convt64")
+	if typ != "int64" {
+		t.Errorf("convT64 should suggest int64, got %q", typ)
+	}
+}
+
+func TestInferTypeFromOffset_Small(t *testing.T) {
+	typ := inferTypeFromOffset("0x10")
+	if typ != "int" {
+		t.Errorf("offset 0x10 should be int, got %q", typ)
+	}
+}
+
+func TestInferTypeFromOffset_Large(t *testing.T) {
+	typ := inferTypeFromOffset("0x80")
+	if typ != "int" {
+		t.Errorf("offset 0x80 should be int, got %q", typ)
+	}
+}
+
+func TestInferTypeFromOffset_Zero(t *testing.T) {
+	typ := inferTypeFromOffset("0x0")
+	if typ != "" {
+		t.Errorf("offset 0x0 should be empty (likely embedded), got %q", typ)
+	}
+}
+
+func TestInferStructFields_TypeConsensus(t *testing.T) {
+	st := &StructType{
+		Name:        "Flag",
+		PackagePath: "main",
+	}
+
+	getBlocks := []*disasm.BasicBlock{{
+		StartAddr: 0x1000,
+		EndAddr:   0x1010,
+		Instructions: []disasm.Instruction{
+			{Address: 0x1000, Opcode: "MOVB", IntelSyntax: "mov byte ptr [rax+0x10]", GoSyntax: "MOVB (AX), BL", Size: 5},
+			{Address: 0x1005, Opcode: "RET", IntelSyntax: "ret", GoSyntax: "RET", Size: 1},
+		},
+	}}
+
+	setBlocks := []*disasm.BasicBlock{{
+		StartAddr: 0x1100,
+		EndAddr:   0x1110,
+		Instructions: []disasm.Instruction{
+			{Address: 0x1100, Opcode: "CMPB", IntelSyntax: "cmp byte ptr [rax+0x10]", GoSyntax: "CMPB $0, (AX)", Size: 5},
+			{Address: 0x1105, Opcode: "RET", IntelSyntax: "ret", GoSyntax: "RET", Size: 1},
+		},
+	}}
+
+	st.Methods = []*Function{
+		{Name: "main.(*Flag).Get", ShortName: "Get", Blocks: getBlocks},
+		{Name: "main.(*Flag).Set", ShortName: "Set", Blocks: setBlocks},
+	}
+
+	fields := InferStructFields(st)
+	for _, f := range fields {
+		t.Logf("field: %s %s offset=%s count=%d", f.Name, f.Type, f.Offset, f.Count)
 	}
 }

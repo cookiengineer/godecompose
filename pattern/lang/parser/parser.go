@@ -676,6 +676,10 @@ func (p *Parser) parseGenText() *ast.GenText {
 			text += "@"
 			continue
 		}
+		next := p.current()
+		if text != "" && (next.Type == token.Identifier || next.Type == token.Keyword) {
+			break
+		}
 		text += p.advance().Literal
 	}
 	return &ast.GenText{Tok: tok, Text: text}

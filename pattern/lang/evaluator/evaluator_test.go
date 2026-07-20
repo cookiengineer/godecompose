@@ -176,7 +176,7 @@ func TestEvalGenTemplateWithDollar(t *testing.T) {
 		t.Fatalf("expected 1 pattern")
 	}
 
-	expected := "memmove(dst_ptr,src_ptr);"
+	expected := "memmove(dst_ptr, src_ptr);"
 	if patterns[0].GenTemplate != expected {
 		t.Errorf("GenTemplate = %q, want %q", patterns[0].GenTemplate, expected)
 	}

@@ -4,65 +4,84 @@
 
 Godecompose is a **pattern-based decompiler** built as a Go library with a CLI frontend. It recovers Go source code from compiled binaries by matching known compiler output patterns against disassembled machine code.
 
-The pipeline flows: **binary → parse → disassemble → recover functions → classify → callgraph refine → match patterns → generate source**.
+The pipeline flows: **binary → parse → disassemble → recover functions → classify → callgraph refine → [DFA analysis] → [structural analysis] → match patterns → generate source**.
+
+The two new analysis stages (added in Phase 1) run between callgraph refinement and pattern generation:
 
 ```
-                         ┌─────────────────────┐
-                         │   Binary (ELF/PE/   │
-                         │   Mach-O)           │
-                         └─────────┬───────────┘
-                                   │
-                         ┌─────────▼───────────┐
-                         │  binary.Open()      │
-                         │  Format detection   │
-                         │  Section extraction │
-                         │  Symbol table       │
-                         │  Go build info      │
-                         │  pclntab section    │
-                         └─────────┬───────────┘
-                                   │
-                    ┌──────────────┼──────────────┐
-                    │              │              │
-            ┌───────▼──────┐ ┌────▼─────┐ ┌──────▼──────┐
-            │ disasm       │ │ function │ │ pattern/lang │
-            │ DecodeStream │ │ pclntab  │ │ Lexer/Parser │
-            │ GoSyntax     │ │ classify │ │ AST/Evaluate │
-            │ SymLookup    │ │ filter   │ │ Compile      │
-            └───────┬──────┘ └────┬─────┘ └──────┬──────┘
-                    │              │              │
-                    │    ┌─────────▼─────────┐    │
-                    │    │ ClassifyFunction  │    │
-                    │    │ User/Runtime/     │    │
-                    │    │ Stdlib/Vendor     │    │
-                    │    └─────────┬─────────┘    │
-                    │              │              │
-                    │    ┌─────────▼─────────┐    │
-                    │    │ Filter user fns   │    │
-                    │    │ Only user insts   │    │
-                    │    └─────────┬─────────┘    │
-                    │              │              │
-                    │    ┌─────────▼─────────┐    │
-                    │    │ Callgraph refine  │    │
-                    │    │ Lowercase fns →   │    │
-                    │    │ caller's pkg      │    │
-                    │    │ Build structs     │    │
-                    │    │ Refine struct pkgs│    │
-                    │    └─────────┬─────────┘    │
-                    │              │              │
-                    │    ┌─────────▼─────────┐    │
-                    └────┤ pattern/matcher   ├────┘
-                         │ Opcode-indexed    │
-                         │ fuzzy CALL match  │
-                         │ operand capture   │
-                         └─────────┬─────────┘
-                                   │
-                         ┌─────────▼───────────┐
-                         │ pattern/generate    │
-                         │ Template expansion  │
-                         │ Struct stubs        │
-                         │ Method receivers    │
-                         │ Project generation  │
-                         └─────────────────────┘
+                          ┌─────────────────────┐
+                          │   Binary (ELF/PE/   │
+                          │   Mach-O)           │
+                          └─────────┬───────────┘
+                                    │
+                          ┌─────────▼───────────┐
+                          │  binary.Open()      │
+                          │  Format detection   │
+                          │  Section extraction │
+                          │  Symbol table       │
+                          │  Go build info      │
+                          │  pclntab section    │
+                          └─────────┬───────────┘
+                                    │
+                     ┌──────────────┼──────────────┐
+                     │              │              │
+             ┌───────▼──────┐ ┌────▼─────┐ ┌──────▼──────┐
+             │ disasm       │ │ function │ │ pattern/lang │
+             │ DecodeStream │ │ pclntab  │ │ Lexer/Parser │
+             │ GoSyntax     │ │ classify │ │ AST/Evaluate │
+             │ SymLookup    │ │ filter   │ │ Compile      │
+             └───────┬──────┘ └────┬─────┘ └──────┬──────┘
+                     │              │              │
+                     │    ┌─────────▼─────────┐    │
+                     │    │ ClassifyFunction  │    │
+                     │    │ User/Runtime/     │    │
+                     │    │ Stdlib/Vendor     │    │
+                     │    └─────────┬─────────┘    │
+                     │              │              │
+                     │    ┌─────────▼─────────┐    │
+                     │    │ Filter user fns   │    │
+                     │    │ Only user insts   │    │
+                     │    └─────────┬─────────┘    │
+                     │              │              │
+                     │    ┌─────────▼─────────┐    │
+                     │    │ Callgraph refine  │    │
+                     │    │ Lowercase fns →   │    │
+                     │    │ caller's pkg      │    │
+                     │    │ Build structs     │    │
+                     │    │ Refine struct pkgs│    │
+                     │    └─────────┬─────────┘    │
+                     │              │              │
+                     │    ┌─────────▼─────────┐    │
+                     │    │ analysis/dfa      │ NEW│
+                     │    │ Plan9 op parser   │    │
+                     │    │ Inst→Value graph  │    │
+                     │    │ Copy prop/DCE     │    │
+                     │    └─────────┬─────────┘    │
+                     │              │              │
+                     │    ┌─────────▼─────────┐    │
+                     │    │ disasm/structure  │ NEW│
+                     │    │ Region analysis   │    │
+                     │    │ if/else diamond   │    │
+                     │    │ for loop detect   │    │
+                     │    │ switch/case       │    │
+                     │    └─────────┬─────────┘    │
+                     │              │              │
+                     │    ┌─────────▼─────────┐    │
+                     └────┤ pattern/matcher   ├────┘
+                          │ Opcode-indexed    │
+                          │ fuzzy CALL match  │
+                          │ operand capture   │
+                          └─────────┬─────────┘
+                                    │
+                          ┌─────────▼───────────┐
+                          │ pattern/generate    │
+                          │ Template expansion  │
+                          │ DFA Go expressions  │
+                          │ Structured CFG emit │
+                          │ Struct stubs        │
+                          │ Method receivers    │
+                          │ Project generation  │
+                          └─────────────────────┘
 ```
 
 ## Component Design
@@ -187,6 +206,30 @@ Additional fields on `Function`: `ReceiverType`, `IsMethod`, `IsPointerReceiver`
 2. `GoBuildInfo.Path` (if valid, not a Go version string)
 3. Longest common prefix from non-stdlib symbol names (fallback)
 
+### 3b. Data Flow Analysis (`analysis/dfa/`)
+
+Symbolically executes Plan9 Go assembler instructions per basic block to build a value graph. Replaces raw assembly comments with Go expressions.
+
+**Plan9 operand parser** (`parse.go`): Parses Go Plan9 assembler syntax operands: registers (`AX`, `BX`, `R8`), immediates (`$42`, `$0x3F`), memory references (`8(SP)`, `(AX)(BX*8)`, `main.x(SB)`).
+
+**Instruction translation** (`translate.go`): Dispatches by normalized opcode to build `Value` nodes in a block-local state machine. Covers MOV, ADD, SUB, AND, OR, XOR, SHL, SHR, INC, DEC, NEG, NOT, LEA, CMP, TEST, CALL, Jcc, SETcc, RET.
+
+**Optimization** (`optimize.go`): Copy propagation, dead store elimination, constant folding, identity simplification (e.g., `x+0`→`x`, `x*1`→`x`).
+
+**Code emission** (`emit.go`): Renders `Value` trees to Go source text. Unrecognized instructions fall back to assembly comments.
+
+### 3c. Structural Analysis (`disasm/structure.go`)
+
+Post-dominator-based control flow structuring for proper Go emission.
+
+**Post-dominator computation**: Lengauer-Tarjan on reversed CFG with virtual exit node. Enables merge-point detection for if/else diamonds.
+
+**Region detection** (in `pattern/generate/generate.go`):
+- **If/else diamonds**: Conditional block with two successors merging at IPD — emits `} else {` with inline else body
+- **For loops**: Loop headers detected via back-edges from dominator analysis — emits `for { ... }` or `for cond { ... }`
+- **If-else-if chains**: Consecutive conditional blocks — emits `else if { ... }`
+- **Condition extraction**: Uses DFA-analyzed CMP/TEST to reconstruct Go comparison expressions
+
 ### 4. Pattern Language Engine (`pattern/lang/`)
 
 Implements an ImHex-compatible pattern language with decompilation extensions.
@@ -298,7 +341,13 @@ The `actions/` package provides reusable decompilation pipeline steps with descr
 
 ## Key Design Decisions
 
-### Why pattern matching instead of classical decompilation?
+### Why data flow analysis in addition to pattern matching?
+
+Pattern matching identifies high-level operations (function calls, if/else structure) but cannot reconstruct the Go expressions between them. A function like `result := x + y; fmt.Println(result)` compiles to `MOVQ RAX, DI; ADDQ RBX, DI; MOVQ DI, 8(SP); LEAQ 8(SP), AX; CALL fmt.Println`. Only the CALL matches a pattern. The MOV/ADD/LEA instructions become assembly comments.
+
+The DFA (`analysis/dfa/`) fills this gap by symbolically executing each instruction to build a value graph, then emitting Go expressions from that graph. This turns the 10,000+ unresolved assembly lines into readable Go statements.
+
+### Why post-dominator-based structuring?
 
 Classical decompilers (Hex-Rays, Ghidra) lift assembly to IR, apply simplification passes, recover types, structure control flow, and emit pseudo-code. This works for C/C++ but struggles with:
 - **Go binaries**: Unusual calling convention, runtime coupling, static linking
@@ -337,6 +386,8 @@ A typical Go binary contains ~180K instructions, of which ~95% are runtime and s
 ```
 godecompose/
 ├── actions/              # Reusable decompilation pipeline steps
+├── analysis/             # Data flow analysis for Go expression reconstruction
+│   └── dfa/              # Intra-block symbolic execution + optimization + emission
 ├── binary/               # Common binary interface + format parsers
 │   ├── elf/              # ELF binary parser
 │   ├── pe/               # PE/COFF binary parser
@@ -345,16 +396,21 @@ godecompose/
 ├── database/             # Pattern database + syscall tables (JSON)
 │   └── syscall/          # syscalls
 │       └── tables/       # syscall tables (JSON)
-├── disasm/               # x86_64 disassembler + Go Plan 9 asm
+├── disasm/               # x86_64 disassembler + CFG + structural analysis
 ├── docs/                 # Documentation
 ├── e2e/
 │   ├── e2e_test.go               # Binary parsing/disassembly E2E tests
 │   ├── decompile/               # Per-package decompilation E2E tests
 │   │   ├── fmt/fmt_test.go
 │   │   ├── sync/sync_test.go
+│   │   ├── dfa_simple/
+│   │   ├── phase1_forloop/
+│   │   ├── phase1_ifelse/
+│   │   ├── phase1_switch/
+│   │   ├── phase1_structs/
 │   │   └── ...
 │   └── internal/decompile/     # Shared test helpers
-├── function/             # Function recovery (pclntab, classification, callgraph, structs)
+├── function/             # Function recovery (pclntab, classification, callgraph, structs, signatures)
 ├── goutil/               # Go compilation test utilities
 ├── pattern/              # Pattern language engine (lang/, matcher/, generate/)
 ├── patterns/             # Pattern files (.hexpat)

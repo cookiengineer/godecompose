@@ -143,8 +143,8 @@ All documented packages are fully implemented with patterns, testdata programs, 
 ## Summary
 
 All Go standard library packages documented in this plan are fully implemented with:
-- Pattern definitions (`.hexpat` files) — 709 patterns across stdlib (437), runtime (87), fallback (26), and controlflow (159) modules
+- Pattern files (`.hexpat`) — 562 files across stdlib (437), runtime (87), fallback (26), and controlflow (12) modules
 - Test source programs (`main.go`)
 - End-to-end decompile tests (compile → disassemble → match → generate → verify)
 
-Total: **50+ packages** with **709 patterns** across four modules (stdlib 437, runtime 87, fallback 26, controlflow 159), all with automated E2E tests.
+Total: **50+ packages** with **562 pattern files** across four modules (stdlib 437, runtime 87, fallback 26, controlflow 12), all with automated E2E tests.
